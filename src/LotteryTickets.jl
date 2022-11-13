@@ -1,6 +1,6 @@
 module LotteryTickets
 
-using Adapt, LinearAlgebra, SparseArrays, CUDA, ChainRulesCore, ChainRules, ArrayInterfaceCore, Flux
+using Adapt, LinearAlgebra, SparseArrays, CUDA, ChainRulesCore, ChainRules, ArrayInterfaceCore, Flux, OneHotArrays
 
 import Base: copy, size, length, trues, getindex, setindex!, vec, similar
 import Base: +, -, *, ==

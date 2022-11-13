@@ -20,6 +20,7 @@ for op in (:+, :-, :*, :(==))
     @eval begin
         ($op)(m::MaskedMatrix, x::AbstractVecOrMat) = ($op)(m.w .* m.mask, x)
         ($op)(x::AbstractVecOrMat, m::MaskedMatrix) = ($op)(x, m.w .* m.mask)
+        ($op)(m::MaskedMatrix, x::Union{OneHotArrays.OneHotMatrix, OneHotArrays.OneHotVector})  = ($op)(m.w .* m.mask, x)
     end
 end
 

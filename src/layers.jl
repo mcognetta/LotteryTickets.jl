@@ -7,6 +7,12 @@ function MaskedDense(d::Pair{<:Integer, <:Integer}, σ=identity; bias=true, init
     Dense(MaskedMatrix(temp.weight), bias, temp.σ)
 end
 
+function MaskedRNN((in, out)::Pair, σ=tanh)
+    temp = Flux.RNNCell(in => out, σ)
+#(σ, init(out, in), init(out, out), initb(out), init_state(out,1)
+    Flux.Recur(Flux.RNNCell(temp.σ, MaskedMatrix(temp.Wi), MaskedMatrix(temp.Wh), temp.b, temp.state0))
+end
+
 # Flux.trainable(m::MaskedMatrix) = m
 Flux.params(m::MaskedMatrix) = m
 
