@@ -14,7 +14,7 @@
 
 # To run this example, we need the following packages:
 
-
+using Revise
 using Flux, Statistics
 using Flux.Data: DataLoader
 using Flux: onehotbatch, onecold, @epochs
@@ -28,9 +28,9 @@ using LotteryTickets
 
 @kwdef mutable struct Args
     η::Float64 =  0.001      ## learning rate
-    batchsize::Int = 64      ## batch size
+    batchsize::Int = 32      ## batch size
     epochs::Int = 20         ## number of epochs
-    use_cuda::Bool = false   ## use gpu (if cuda available)
+    use_cuda::Bool = true   ## use gpu (if cuda available)
 end
 
 # If a GPU is available on our local system, then Flux uses it for computing the loss and updating the weights and biases when training our model.
@@ -40,7 +40,7 @@ end
 
 # We create the function `getdata` to load the MNIST train and test data from [MLDatasets](https://github.com/JuliaML/MLDatasets.jl) and reshape them so that they are in the shape that Flux expects. 
 
-function getdata(args)
+function getdata(args, device)
     ENV["DATADEPS_ALWAYS_ACCEPT"] = "true"
 
     ## Load dataset	
@@ -55,8 +55,8 @@ function getdata(args)
     ytrain, ytest = onehotbatch(ytrain, 0:9), onehotbatch(ytest, 0:9)
 
     ## Create two DataLoader objects (mini-batch iterators)
-    train_loader = DataLoader((xtrain, ytrain), batchsize=args.batchsize, shuffle=true)
-    test_loader = DataLoader((xtest, ytest), batchsize=args.batchsize)
+    train_loader = DataLoader((xtrain, ytrain) |> device, batchsize=args.batchsize, shuffle=true)
+    test_loader = DataLoader((xtest, ytest) |> device, batchsize=args.batchsize)
 
     return train_loader, test_loader
 end
@@ -85,9 +85,17 @@ function build_model(; imgsize=(28,28,1), nclasses=10)
                   MaskedDense(64 => 32, relu),
                   MaskedDense(32 => nclasses))
     # return Chain( Dense(prod(imgsize) => 64, relu),
-    #             Dense(64 => 64, relu),
     #             Dense(64 => 32,  relu),
     #             Dense(32 => nclasses))
+end
+
+function build_old_model(; imgsize=(28,28,1), nclasses=10)
+    # return Chain( MaskedDense(prod(imgsize) => 64, relu),
+    #               MaskedDense(64 => 32, relu),
+    #               MaskedDense(32 => nclasses))
+    return Chain( Dense(prod(imgsize) => 64, relu),
+                Dense(64 => 32,  relu),
+                Dense(32 => nclasses))
 end
 
 # Note that we use the functions [Dense](https://fluxml.ai/Flux.jl/stable/models/layers/#Flux.Dense) so that our model is *densely* (or fully) connected and [Chain](https://fluxml.ai/Flux.jl/stable/models/layers/#Flux.Chain) to chain the computation of the three layers.
@@ -99,12 +107,12 @@ end
 # * The `build_model` function we defined above.
 # * A device object (in case we have a GPU available).
 
-function loss_and_accuracy(data_loader, model, device)
+function loss_and_accuracy(data_loader, model)
     acc = 0
     ls = 0.0f0
     num = 0
     for (x, y) in data_loader
-        x, y = device(x), device(y)
+        # x, y = device(x), device(y)
         ŷ = model(x)
         ls += logitcrossentropy(ŷ, y, agg=sum)
         acc += sum(onecold(ŷ) .== onecold(y)) ## Decode the output of the model
@@ -122,33 +130,34 @@ end
 
 # Now, we define the `train` function that calls the functions defined above and trains the model.
 
-function train(model, opt, args; kws...)
+function train(model, opt, args, train, test; kws...)
 
-    if CUDA.functional() && args.use_cuda
-        @info "Training on CUDA GPU"
-        CUDA.allowscalar(false)
-        device = gpu
-    else
-        @info "Training on CPU"
-        device = cpu
-    end
 
-    ## Create test and train dataloaders
-    train_loader, test_loader = getdata(args)
 
     ps = Flux.params(model) ## model's trainable parameters
     
     ## Training
     for epoch in 1:args.epochs
-        for (x, y) in train_loader
-            x, y = device(x), device(y) ## transfer data to device
-            gs = gradient(() -> logitcrossentropy(model(x), y), ps) ## compute gradient
-            Flux.Optimise.update!(opt, ps, gs) ## update parameters
+        # for (x, y) in train
+        #     # x, y = device(x), device(y) ## transfer data to device
+        #     gs = gradient(() -> logitcrossentropy(model(x), y), ps) ## compute gradient
+        #     Flux.Optimise.update!(opt, ps, gs) ## update parameters
+        # end
+
+        for (x, y) in train
+            loss, grad = Flux.withgradient(ps) do
+                # Evaluate model and loss inside gradient context:
+                # y_hat = model(x)
+                # Flux.crossentropy(y_hat, y)
+                logitcrossentropy(model(x), y)
+            end
+            Flux.update!(opt, ps, grad)
+            # push!(losses, loss)  # logging, outside gradient context
         end
-        
+
         ## Report on train and test
-        train_loss, train_acc = loss_and_accuracy(train_loader, model, device)
-        test_loss, test_acc = loss_and_accuracy(test_loader, model, device)
+        train_loss, train_acc = loss_and_accuracy(train, model)
+        test_loss, test_acc = loss_and_accuracy(test, model)
         println("Epoch=$epoch")
         println("  train_loss = $train_loss, train_accuracy = $train_acc")
         println("  test_loss = $test_loss, test_accuracy = $test_acc")
@@ -173,40 +182,45 @@ end
 # end
 
 function main(;kws...)
-    models = schedule(15; kws...)
-    return models
+    CUDA.allowscalar(false)
+    model, opt = schedule(1; kws...)
+    return model, opt
 end
 
 
 # We call the `train` function:
 function schedule(rounds; kws...)
-    models = Vector{Any}()
+    # models = Vector{Any}()
     args = Args(; kws...) ## Collect options in a struct for convenience
     device = args.use_cuda ? gpu : cpu
+    # model = build_old_model() |> device
     model = build_model() |> device
-        
+    ## Create test and train dataloaders
+    train_loader, test_loader = getdata(args, device)
     ## Optimizer
+
     opt = ADAM(args.η)
     # model, opt = train(model, opt, args)
     for r in 1:rounds
         @info "ROUND $r"
-        model, opt = train(model, opt, args)
-        push!(models, model)
+        train(model, opt, args, train_loader, test_loader)
+        # push!(models, model)
 
-        new = deepcopy(model)
-        for p in Flux.params(new)
+        # new = deepcopy(model)
+        for p in Flux.params(model)
             LotteryTickets.prune!(p, .15, true)
-            LotteryTickets.rewind!(p, Flux.glorot_uniform)
+            LotteryTickets.rewind!(p) ## , Flux.glorot_uniform)
         end
-        model = new
+        CUDA.reclaim()
+        # model = new
     end
 
-    models
+    model, opt
 end
 
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    models = main()
+    model, opt = main()
 end
 
 # >**Note:** We can change hyperparameters by modifying train(η=0.01). 
@@ -215,3 +229,6 @@ end
  
 # * [3Blue1Brown Neural networks videos](https://www.youtube.com/watch?v=aircAruvnKk&list=PLZHQObOWTQDNU6R1_67000Dx_ZCJB-3pi)
 # * [Neural Networks and Deep Learning](http://neuralnetworksanddeeplearning.com/)
+
+
+

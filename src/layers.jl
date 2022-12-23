@@ -14,9 +14,16 @@ function MaskedRNN((in, out)::Pair, σ=tanh)
 end
 
 # Flux.trainable(m::MaskedMatrix) = m
-Flux.params(m::MaskedMatrix) = m
+# Flux.params(m::MaskedMatrix) = m
 
-Flux.adapt_storage(to::Flux.FluxCUDAAdaptor, x::MaskedMatrix) = MaskedMatrix(CUDA.cu(x.w), CUDA.cu(x.mask))
+# import Adapt
+# function Adapt.adapt_structure(to, itp::Interpolate)
+#     xs = Adapt.adapt_structure(to, itp.xs)
+#     ys = Adapt.adapt_structure(to, itp.ys)
+#     Interpolate(xs, ys)
+# end
+
+# Flux.adapt_storage(to::Flux.FluxCUDAAdaptor, x::MaskedMatrix) = MaskedMatrix(CUDA.cu(x.w), CUDA.cu(x.mask))
 
 Adapt.adapt_structure(to, m::MaskedMatrix) = MaskedMatrix(adapt(to, m.w), adapt(to, m.mask))
 # Flux.trainable(m::MaskedMatrix) = (m.w,)

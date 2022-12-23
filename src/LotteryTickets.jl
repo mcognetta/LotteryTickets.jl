@@ -1,10 +1,11 @@
 module LotteryTickets
 
-using Adapt, LinearAlgebra, SparseArrays, CUDA, ChainRulesCore, ChainRules, ArrayInterfaceCore, Flux, OneHotArrays
+using Adapt, LinearAlgebra, SparseArrays, CUDA, ChainRulesCore, ChainRules, ArrayInterface, ArrayInterfaceCore, Flux, OneHotArrays, GPUArraysCore
 
-import Base: copy, size, length, trues, getindex, setindex!, vec, similar
+import Base: copy, copyto!, size, length, trues, getindex, setindex!, vec, similar
 import Base: +, -, *, ==
 import Base: show
+using Base.Broadcast: BroadcastStyle, Broadcasted
 import Flux: create_bias, @functor, adapt_storage, FluxCUDAAdaptor
 
 export MaskedMatrix, prune!, sparsify, rewind!, rewind

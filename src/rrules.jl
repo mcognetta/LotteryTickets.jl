@@ -2,7 +2,7 @@
 
 function ChainRulesCore.rrule(::typeof(Base.:*), m::MaskedMatrix, x::AbstractVector{S} where S<:Real)
     y = m * x
-    project_Masked = ProjectTo(m)
+     # project_Masked = ProjectTo(m)
     function foo_mul_pullback(ȳ)
         f̄ = NoTangent()
         # f̄oo = Tangent{typeof(m)}(; w= m.mask .* (ȳ * x'), mask=ZeroTangent())
@@ -15,7 +15,7 @@ end
 
 function ChainRulesCore.rrule(::typeof(Base.:*), m::MaskedMatrix, x::AbstractMatrix{S} where S<:Real)
     y = m * x
-    project_Masked = ProjectTo(m)
+    # project_Masked = ProjectTo(m)
     function foo_mul_pullback(ȳ)
         f̄ = NoTangent()
         # f̄oo = Tangent{typeof(m)}(; w= m.mask .* (ȳ * x'), mask=ZeroTangent())
