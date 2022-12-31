@@ -11,9 +11,15 @@ function MaskedMatrix(x::W) where W
     MaskedMatrix{eltype(x), W, typeof(mask)}(x,mask)
 end
 
+MaskedMatrix
+MaskedMatrix{T, V}(x::A) where {T, A<:AbstractMatrix{T}, V<:AbstractMatrix{T}} = MaskedMatrix{T, A}(x, similar(x, Bool) .= true)
+MaskedMatrix{T, M}(u::UndefInitializer, dims) where {T, M<:CuMatrix} = (println("THIS ONE"); MaskedMatrix(CuMatrix{T}(zeros(T, dims...))))
+MaskedMatrix{T, M}(u::UndefInitializer, dims) where {T, M<:AbstractMatrix} = (println("THIS ONE"); MaskedMatrix(Matrix{T}(zeros(T, dims...))))
+# (::Type{M})(u::UndefInitializer, dims) where {T, M<:MaskedMatrix{T}} = (println("other one", M); MaskedMatrix(Matrix{T}(u, dims...)))
+
 # AbstractMatrix Interface
 Base.size(m::MaskedMatrix) = size(m.w)
-Base.getindex(m::MaskedMatrix, i::Int, j::Int) = getindex(m.w, i, j) * getindex(m.mask, i, j)
+Base.getindex(m::MaskedMatrix, i::Int, j::Int)     = getindex(m.w, i, j) * getindex(m.mask, i, j)
 Base.setindex!(m::MaskedMatrix, v, i::Int, j::Int) = setindex!(m.w, v * getindex(m.mask, i, j), i, j)
 
 for op in (:+, :-, :*)
@@ -77,10 +83,23 @@ function Flux.update!(opt::Flux.Optimise.AbstractOptimiser, x::MaskedMatrix, x̄
                                             # output are not mutable, see #1510
                                             
     # x̄r = copyto!(similar(x̄), x̄)
+
+    println("YO")
     x̄r = copy(x̄)
+    println(typeof(x))
+    println(typeof(x̄))
+    println( typeof(x.w))
+    println(typeof(x̄r))
+    println(typeof(x̄r.w .* x̄r.mask))
+
+    println("YO1")
     x.w .= (x.w .* x.mask)
-    x.w .-= Flux.Optimise.apply!(opt, x, x̄r.w .* x̄r.mask)
+    println("YO2")
+    x.w .-= Flux.Optimise.apply!(opt, x.w, x̄r.w .* x̄r.mask)
+    println("YO3")
 end
+
+Flux.Optimisers.maywrite(::MaskedMatrix) = true
 
 # other
 Base.Matrix(m::MaskedMatrix) = m.w .* m.mask
@@ -139,29 +158,31 @@ function Base.fill!(m::MaskedMatrix, v)
 end
 
 Base.broadcast(f::Tf, m::MaskedMatrix, v) where Tf = broadcast(x -> f(x, T), A)
-Base.BroadcastStyle(::Type{<:MaskedMatrix}) = Broadcast.ArrayStyle{MaskedMatrix}()
+Base.BroadcastStyle(::Type{M}) where {T, A<:AbstractMatrix{T}, M<:MaskedMatrix{T, A}} = Broadcast.ArrayStyle{MaskedMatrix{T,A}}()
+
 
 Base.similar(bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{MaskedMatrix{T, A}}}, ::Type{T}) where {T, A} =
-    similar(MaskedMatrix{T, A}, axes(bc))
+(println("bc1"); similar(MaskedMatrix{T, A}, axes(bc)))
 
-Base.similar(bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{MaskedMatrix{T}}}, ::Type{T}, dims) where {T} = similar(MaskedMatrix{T}, dims)
-Base.similar(bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{MaskedMatrix}}, ::Type{T}, dims) where {T} = similar(MaskedMatrix{T}, dims)
+Base.similar(bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{MaskedMatrix{T}}}, ::Type{T}, dims) where {T} = (println("bc2"); similar(MaskedMatrix{T}, dims))
+# Base.similar(bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{MaskedMatrix}}, ::Type{T}, dims) where {T} = (println("bc3"); similar(MaskedMatrix{T}, dims))
+Base.similar(bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{M}}, ::Type{T}, dims) where {T, M<:MaskedMatrix} = (println("bc4", M, eltype(M)); similar(M, dims))
     # MaskedMatrix{T}(undef, dims)
 
-# function Base.similar(bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{MaskedMatrix}}, ::Type{ElType}) where ElType
-#     # Scan the inputs for the ArrayAndChar:
-#     M = find_mm(bc)
-#     # Use the char field of A to create the output
-#     MaskedMatrix(similar(Array{ElType}, axes(bc)), M.mask)
-# end
+function Base.similar(bc::Broadcast.Broadcasted{Broadcast.ArrayStyle{MaskedMatrix{T,A}}}, ::Type{ElType}) where {T, A, ElType}
+    # Scan the inputs for the ArrayAndChar:
+    M = find_mm(bc)
+    # Use the char field of A to create the output
+    MaskedMatrix(similar(A{ElType}, axes(bc)), M.mask)
+end
 
 Base.show(io::IO, mime::MIME"text/plain", m::MaskedMatrix) = (println("MASKED MATRIX"); Base.show(io, mime, (m.w .* m.mask)))
 Base.show(io::IO, m::MaskedMatrix) = Base.show(io, (m.w .* m.mask) .+ 10)
 
+# Adapt.adapt_storage(::Type{<:MaskedMatrix}, xs) = MaskedMatrix(xs)
+# Adapt.adapt_structure(::Type{<:MaskedMatrix}, xs) = MaskedMatrix(xs)
+# Adapt.adapt_structure(to, x::M) where {T, M<:MaskedMatrix{T}} = MaskedMatrix{T}(adapt(to, x.w))
 
-
-Adapt.adapt_storage(::Type{<:MaskedMatrix}, xs) = MaskedMatrix(xs)
-Adapt.adapt_structure(::Type{<:MaskedMatrix}, xs) = MaskedMatrix(xs)
 find_mm(bc::Base.Broadcast.Broadcasted) = find_mm(bc.args)
 find_mm(args::Tuple) = find_mm(find_mm(args[1]), Base.tail(args))
 find_mm(x) = x

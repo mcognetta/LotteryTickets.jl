@@ -119,8 +119,8 @@ function train(; kws...)
     # Xs, Ys = args.gpu ? (gpu(Xs), gpu(Ys)) : (Xs, Ys)
 
     ## Constructing Model
-    # m = build_model(N)
-    m = build_old_model(N)
+    m = build_model(N)
+    # m = build_old_model(N)
 
     m = args.gpu ? gpu(m) : m
 
@@ -185,5 +185,5 @@ end
 # Finally, to run this example we call the functions `train` and `sample_data`:
 
 cd(@__DIR__)
-m, alphabet = train()
-sample_data(m, alphabet, 1000) |> println
+# m, alphabet = train()
+# sample_data(m, alphabet, 1000) |> println
