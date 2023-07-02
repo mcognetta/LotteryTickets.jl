@@ -27,10 +27,11 @@ using LotteryTickets
 # We set default values for learning rate, batch size, epochs, and the usage of a GPU (if available) for the model:
 
 @kwdef mutable struct Args
-    η::Float64 =  0.001      ## learning rate
-    batchsize::Int = 32      ## batch size
-    epochs::Int = 20         ## number of epochs
-    use_cuda::Bool = true   ## use gpu (if cuda available)
+    η::Float64 =  0.0005        ## learning rate
+    batchsize::Int = 32         ## batch size
+    epochs::Int = 25            ## number of epochs
+    use_cuda::Bool = true       ## use gpu (if cuda available)
+    use_conv_model::Bool = true ## MLP or CNN
 end
 
 # If a GPU is available on our local system, then Flux uses it for computing the loss and updating the weights and biases when training our model.
@@ -46,7 +47,7 @@ function getdata(args, device)
     ## Load dataset	
     xtrain, ytrain = MLDatasets.MNIST(:train)[:]
     xtest, ytest = MLDatasets.MNIST(:test)[:]
-	
+
     ## Reshape input data to flatten each image into a linear array
     xtrain = Flux.flatten(xtrain)
     xtest = Flux.flatten(xtest)
@@ -82,11 +83,22 @@ end
 
 function build_model(; imgsize=(28,28,1), nclasses=10)
     return Chain( MaskedDense(prod(imgsize) => 64, relu),
+                  MaskedDense(64 => 64, relu),
                   MaskedDense(64 => 32, relu),
                   MaskedDense(32 => nclasses))
-    # return Chain( Dense(prod(imgsize) => 64, relu),
-    #             Dense(64 => 32,  relu),
-    #             Dense(32 => nclasses))
+end
+
+function build_conv_model(; imgsize=(28, 28, 1), nclasses = 10)
+    return Chain(
+        Conv((5, 5), 1=>6, relu),
+        MaxPool((2, 2)),
+        Conv((5, 5), 6=>16, relu),
+        MaxPool((2, 2)),
+        Flux.flatten,
+        Dense(256 => 120, relu),
+        Dense(120 => 84, relu), 
+        Dense(84 => 10),
+    )
 end
 
 function build_old_model(; imgsize=(28,28,1), nclasses=10)
@@ -183,7 +195,7 @@ end
 
 function main(;kws...)
     CUDA.allowscalar(false)
-    model, opt = schedule(1; kws...)
+    model, opt = schedule(10; kws...)
     return model, opt
 end
 
@@ -194,27 +206,40 @@ function schedule(rounds; kws...)
     args = Args(; kws...) ## Collect options in a struct for convenience
     device = args.use_cuda ? gpu : cpu
     # model = build_old_model() |> device
-    model = build_model() |> device
+
+    if args.use_conv_model
+        model = build_conv_model() |> device
+        pruner = LotteryTickets.PruneGroup([model[1].weight, model[3].weight, model[6].weight, model[7].weight])
+    else
+        model = build_model() |> device
+        pruner = LotteryTickets.PruneGroup([model[1].weight, model[2].weight, model[3].weight])
+    end
     ## Create test and train dataloaders
     train_loader, test_loader = getdata(args, device)
     ## Optimizer
 
     opt = ADAM(args.η)
     # model, opt = train(model, opt, args)
-    for r in 1:rounds
+    for r in 1:rounds-1
         @info "ROUND $r"
         train(model, opt, args, train_loader, test_loader)
         # push!(models, model)
 
         # new = deepcopy(model)
-        for p in Flux.params(model)
-            LotteryTickets.prune!(p, .15, true)
-            LotteryTickets.rewind!(p) ## , Flux.glorot_uniform)
-        end
+        # for p in Flux.params(model)
+        #     LotteryTickets.prune_and_restore!(p, .15, true)
+        #     # LotteryTickets.rewind!(p) ## , Flux.glorot_uniform)
+        # end
+        LotteryTickets.prune_and_restore!(pruner, 0.10, true)
+
         CUDA.reclaim()
         # model = new
     end
+    @info "ROUND $rounds (last round)"
+    train(model, opt, args, train_loader, test_loader)
 
+    test_loss, test_acc = loss_and_accuracy(test_loader, model)
+    println("FINAL LOSS AND ACCURACY  test_loss = $test_loss, test_accuracy = $test_acc")
     model, opt
 end
 

@@ -2,16 +2,19 @@
 struct MaskedMatrix{T<:Number, W<:AbstractMatrix{T}, M<:AbstractMatrix{Bool}} <: AbstractMatrix{T}
     w::W
     mask::M
+    orig::W
 end
 Flux.@functor MaskedMatrix
 
 
-function MaskedMatrix(x::W) where W
+function MaskedMatrix(x::W) where {W <: AbstractMatrix}
     mask = similar(x, Bool) .= true
-    MaskedMatrix{eltype(x), W, typeof(mask)}(x,mask)
+    MaskedMatrix{eltype(x), W, typeof(mask)}(x,mask,copy(x))
 end
 
-MaskedMatrix
+MaskedMatrix(m::MaskedMatrix) = MaskedMatrix(m.w, m.mask, m.orig)
+
+MaskedMatrix(x, m) = MaskedMatrix(x, m, deepcopy(x))
 MaskedMatrix{T, V}(x::A) where {T, A<:AbstractMatrix{T}, V<:AbstractMatrix{T}} = MaskedMatrix{T, A}(x, similar(x, Bool) .= true)
 MaskedMatrix{T, M}(u::UndefInitializer, dims) where {T, M<:CuMatrix} = MaskedMatrix(CuMatrix{T}(zeros(T, dims...)))
 MaskedMatrix{T, M}(u::UndefInitializer, dims) where {T, M<:AbstractMatrix} = MaskedMatrix(Matrix{T}(zeros(T, dims...)))
@@ -51,17 +54,18 @@ Base.:+(m::MaskedMatrix) = MaskedMatrix(+m.w, m.mask)
 Base.:-(m::MaskedMatrix) = MaskedMatrix(-m.w, m.mask) # invert weights first to avoid -0.0
 
 
-Base.copy(m::MaskedMatrix) = MaskedMatrix(copy(m.w), copy(m.mask))
+Base.copy(m::MaskedMatrix) = MaskedMatrix(copy(m.w), copy(m.mask), copy(m.orig))
 Base.copyto!(m::MaskedMatrix, x::AbstractArray) = (m.w .= x; m)
-function Base.copyto!(dest::MaskedMatrix, B::Base.Broadcast.Broadcasted)
-    copyto!(dest.w, B)
-    dest
-end
+Base.copyto!(m::MaskedMatrix, n::MaskedMatrix) = (m.w .= n.w; m.mask .= n.mask; m.orig .= n.orig; m)
+# function Base.copyto!(dest::MaskedMatrix, B::Base.Broadcast.Broadcasted)
+#     copyto!(dest.w, B)
+#     dest
+# end
 
-@inline function Base.copyto!(dest::MaskedMatrix, B::Base.Broadcast.Broadcasted{<:AbstractGPUArrayStyle})
-    copyto!(dest.w, B)
-    dest
-end
+# @inline function Base.copyto!(dest::MaskedMatrix, B::Base.Broadcast.Broadcasted{<:AbstractGPUArrayStyle})
+#     copyto!(dest.w, B)
+#     dest
+# end
 
 
 
@@ -88,6 +92,8 @@ Flux.Optimisers.maywrite(::MaskedMatrix) = true
 
 # other
 Base.Matrix(m::MaskedMatrix) = m.w .* m.mask
+Base.convert(::Type{T}, a::AbstractMatrix) where T <: MaskedMatrix = MaskedMatrix(a)
+
 sparsify(m::MaskedMatrix) = SparseMatrixCSC(Base.Matrix(m))
 
 # prune the bottom k
@@ -95,20 +101,97 @@ sparsify(m::MaskedMatrix) = SparseMatrixCSC(Base.Matrix(m))
 # workaround since partialsortperm isn't yet supproted by CUDA.jl
 partialsortperm_cuda(c, k) = sortperm(c)[k]
 
+
+abstract type AbstractPruner end
+
+struct PruneGroup <: AbstractPruner
+    matrices::Array
+end
+
+Base.length(g::PruneGroup) = length(g.matrices)
+
 prune!(x, p::Float64, zerooutweights::Bool) = nothing
+prune_and_restore!(x, p, zerooutweights) = nothing
+
+# TODO: gpu and cpu dispatch, so we don't use partialsortperm_cuda
 function prune!(m::MaskedMatrix, p::Float64, zerooutweights::Bool=false)
     # @assert 0 <= p < 1, "p must be in [0, 1)"
     indices = findall(view(m.mask, :))
     k = round(Int, p * length(indices))
     before = sum(m.mask)
-    # println("K = $k")
-    # bot_k = partialsortperm(view(m.w, :)[indices], 1:k)
     bot_k = partialsortperm_cuda(abs.(reshape(m.w[indices], :)), 1:k)
     view(m.mask, :)[indices[bot_k]] .= zero(Bool)
     zerooutweights || (m.w .= (m.w .* m.mask))
     after = sum(m.mask)
-    println("K = $k, before/after $before -> $after")
     m
+end
+
+restore!(m::MaskedMatrix) = (m.w .= m.orig; m)
+
+function prune_and_restore!(m::MaskedMatrix, p::Float64, zerooutweights::Bool=false)
+    prune!(m, p)
+    restore!(m)
+    zerooutweights || (m.w .= (m.w .* m.mask))
+    m
+end
+
+
+
+function _gpu_prune!(g::PruneGroup, p::Float64, zerooutweights::Bool = false)
+
+    cpu_group = PruneGroup(cpu.(g.matrices))
+
+    _cpu_prune!(cpu_group, p, zerooutweights)
+    for (cm, gm) in zip(cpu_group.matrices, g.matrices)
+        copyto!(gm, gpu(cm))
+    end
+    g
+end
+
+function _cpu_prune!(g::PruneGroup, p::Float64, zerooutweights::Bool=false)
+    L = 0
+
+    v = Vector{Tuple{eltype(g.matrices[1]), Int, Int}}()
+
+    for (idx, m) in enumerate(g.matrices)
+        indices = findall(view(m.mask, :))
+        L += length(indices)
+        append!(v, collect(zip(m[indices], Iterators.repeated(idx), indices)))
+    end
+
+    k = min(L, round(Int, p * L, RoundUp))
+    
+    indices = sortperm(v, by=x->x[1])[1:k]
+
+    for (_, m_idx, idx) in v[indices]
+        zerooutweights && (g.matrices[m_idx].w[idx] = 0.0)
+        g.matrices[m_idx].mask[idx] = false
+    end
+    g
+end
+
+function prune!(g::PruneGroup, p::Float64, zerooutweights::Bool=false)
+    println("CALLING PRUNE!")
+    sizes = sum.(m.mask for m in g.matrices)
+    if all(m.w isa CuArray for m in g.matrices)
+        _gpu_prune!(g, p, zerooutweights)
+    else
+        _cpu_prune!(g, p, zerooutweights)
+    end
+    after = sum.(m.mask for m in g.matrices)
+    original = length.(m.w for m in g.matrices)
+    for (orig, before, after) in zip(original, sizes, after)
+        println("LAYER $orig: $before -> $after")
+    end
+    g
+end
+
+function prune_and_restore!(g::PruneGroup, p::Float64, zerooutweights::Bool=false)
+    prune!(g, p, zerooutweights)
+    for m in g.matrices
+        restore!(m)
+    end
+    g
 end
 
 adjoint(m::MaskedMatrix) = MaskedMatrix(adjoint(m.w), adjoint(m.mask))
