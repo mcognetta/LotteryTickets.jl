@@ -29,7 +29,7 @@ using LotteryTickets
 @kwdef mutable struct Args
     η::Float64 =  0.0005        ## learning rate
     batchsize::Int = 32         ## batch size
-    epochs::Int = 25            ## number of epochs
+    epochs::Int = 3            ## number of epochs
     use_cuda::Bool = true       ## use gpu (if cuda available)
     use_conv_model::Bool = true ## MLP or CNN
 end
@@ -48,18 +48,32 @@ function getdata(args, device)
     xtrain, ytrain = MLDatasets.MNIST(:train)[:]
     xtest, ytest = MLDatasets.MNIST(:test)[:]
 
-    ## Reshape input data to flatten each image into a linear array
-    xtrain = Flux.flatten(xtrain)
-    xtest = Flux.flatten(xtest)
+    if args.use_conv_model
 
-    ## One-hot-encode the labels
-    ytrain, ytest = onehotbatch(ytrain, 0:9), onehotbatch(ytest, 0:9)
+        train4dim = reshape(xtrain, 28,28,1,:)    # insert trivial channel dim
+        trainyhot = Flux.onehotbatch(ytrain, 0:9)  # make a 10×60000 OneHotMatrix
+        train_loader = Flux.DataLoader((train4dim, trainyhot) |> device; batchsize=args.batchsize, shuffle=true)
 
-    ## Create two DataLoader objects (mini-batch iterators)
-    train_loader = DataLoader((xtrain, ytrain) |> device, batchsize=args.batchsize, shuffle=true)
-    test_loader = DataLoader((xtest, ytest) |> device, batchsize=args.batchsize)
+        test4dim = reshape(xtest, 28,28,1,:)    # insert trivial channel dim
+        testyhot = Flux.onehotbatch(ytest, 0:9)  # make a 10×60000 OneHotMatrix
+        test_loader = Flux.DataLoader((test4dim, testyhot) |> device ; batchsize=args.batchsize)
 
-    return train_loader, test_loader
+        return train_loader, test_loader
+    else
+
+        ## Reshape input data to flatten each image into a linear array
+        xtrain = Flux.flatten(xtrain)
+        xtest = Flux.flatten(xtest)
+
+        ## One-hot-encode the labels
+        ytrain, ytest = onehotbatch(ytrain, 0:9), onehotbatch(ytest, 0:9)
+
+        ## Create two DataLoader objects (mini-batch iterators)
+        train_loader = DataLoader((xtrain, ytrain) |> device, batchsize=args.batchsize, shuffle=true)
+        test_loader = DataLoader((xtest, ytest) |> device, batchsize=args.batchsize)
+
+        return train_loader, test_loader
+    end
 end
 
 # The function `getdata` performs the following tasks:
@@ -90,14 +104,14 @@ end
 
 function build_conv_model(; imgsize=(28, 28, 1), nclasses = 10)
     return Chain(
-        Conv((5, 5), 1=>6, relu),
+        LotteryTickets.MaskedConv((5, 5), 1=>6, relu),
         MaxPool((2, 2)),
-        Conv((5, 5), 6=>16, relu),
+        LotteryTickets.MaskedConv((5, 5), 6=>16, relu),
         MaxPool((2, 2)),
         Flux.flatten,
-        Dense(256 => 120, relu),
-        Dense(120 => 84, relu), 
-        Dense(84 => 10),
+        MaskedDense(256 => 120, relu),
+        MaskedDense(120 => 84, relu), 
+        MaskedDense(84 => 10),
     )
 end
 

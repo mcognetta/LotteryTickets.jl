@@ -7,11 +7,27 @@ function MaskedDense(d::Pair{<:Integer, <:Integer}, σ=identity; bias=true, init
     Dense(MaskedMatrix(temp.weight), bias, temp.σ)
 end
 
+function MaskedDense(d::Dense)
+    return Dense(MaskedMatrix(d.weight), d.bias, d.σ)
+end
+
 function MaskedRNN((in, out)::Pair, σ=tanh)
     temp = Flux.RNNCell(in => out, σ)
 #(σ, init(out, in), init(out, out), initb(out), init_state(out,1)
     Flux.Recur(Flux.RNNCell(temp.σ, MaskedMatrix(temp.Wi), MaskedMatrix(temp.Wh), temp.b, temp.state0))
 end
+
+struct MaskConv
+    c
+end
+
+(c::MaskConv)(x) = c.c(x)
+
+# function MaskedConv(a, b, c)
+
+#     temp = Flux.Conv(a, b, c)
+#     return Flux.Conv(temp.σ, MaskedMatrix(temp.weight), temp.bias, temp.stride, temp.pad, temp.dilation, temp.groups)
+# end
 
 # Flux.trainable(m::MaskedMatrix) = m
 # Flux.params(m::MaskedMatrix) = m
@@ -28,3 +44,5 @@ end
 Adapt.adapt_structure(to, m::MaskedMatrix) = MaskedMatrix(adapt(to, m.w), adapt(to, m.mask))
 # Flux.trainable(m::MaskedMatrix) = (m.w,)
 Flux.Functors.functor(m::MaskedMatrix) = (), _->m
+
+NNlib.conv(x::AbstractArray{xT,N}, c::MaskedMatrix{wT,N}, cdims::ConvDims) where {xT, wT, N} = NNlib.conv(x, c.w .* c.mask, cdims)

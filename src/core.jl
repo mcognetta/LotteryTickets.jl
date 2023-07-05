@@ -1,5 +1,5 @@
 
-struct MaskedMatrix{T<:Number, W<:AbstractMatrix{T}, M<:AbstractMatrix{Bool}} <: AbstractMatrix{T}
+struct MaskedMatrix{T<:Number, N, W<:AbstractArray{T, N}, M<:AbstractArray{Bool, N}} <: AbstractArray{T, N}
     w::W
     mask::M
     orig::W
@@ -7,23 +7,25 @@ end
 Flux.@functor MaskedMatrix
 
 
-function MaskedMatrix(x::W) where {W <: AbstractMatrix}
+function MaskedMatrix(x::W) where {T, N, W <: AbstractArray{T, N}}
     mask = similar(x, Bool) .= true
-    MaskedMatrix{eltype(x), W, typeof(mask)}(x,mask,copy(x))
+    MaskedMatrix{eltype(x), N, W, typeof(mask)}(x,mask,copy(x))
 end
 
 MaskedMatrix(m::MaskedMatrix) = MaskedMatrix(m.w, m.mask, m.orig)
 
 MaskedMatrix(x, m) = MaskedMatrix(x, m, deepcopy(x))
-MaskedMatrix{T, V}(x::A) where {T, A<:AbstractMatrix{T}, V<:AbstractMatrix{T}} = MaskedMatrix{T, A}(x, similar(x, Bool) .= true)
-MaskedMatrix{T, M}(u::UndefInitializer, dims) where {T, M<:CuMatrix} = MaskedMatrix(CuMatrix{T}(zeros(T, dims...)))
-MaskedMatrix{T, M}(u::UndefInitializer, dims) where {T, M<:AbstractMatrix} = MaskedMatrix(Matrix{T}(zeros(T, dims...)))
+MaskedMatrix{T, V}(x::A) where {T, N, A<:AbstractArray{T, N}, V<:AbstractArray{T, N}} = MaskedMatrix{T, A}(x, similar(x, Bool) .= true)
+MaskedMatrix{T, M}(u::UndefInitializer, dims) where {T, M<:CuArray} = MaskedMatrix(CuMatrix{T}(zeros(T, dims...)))
+MaskedMatrix{T, M}(u::UndefInitializer, dims) where {T, M<:AbstractArray} = MaskedMatrix(Matrix{T}(zeros(T, dims...)))
 # (::Type{M})(u::UndefInitializer, dims) where {T, M<:MaskedMatrix{T}} = (println("other one", M); MaskedMatrix(Matrix{T}(u, dims...)))
 
 # AbstractMatrix Interface
 Base.size(m::MaskedMatrix) = size(m.w)
 Base.getindex(m::MaskedMatrix, i::Int, j::Int)     = getindex(m.w, i, j) * getindex(m.mask, i, j)
 Base.setindex!(m::MaskedMatrix, v, i::Int, j::Int) = setindex!(m.w, v * getindex(m.mask, i, j), i, j)
+
+Base.getindex(m::MaskedMatrix, i1::Int64, i2::Int64, I::Int64...) = getindex(m.w, i1, i2, I...) * getindex(m.mask, i1, i2, I...)
 
 for op in (:+, :-, :*)
     @eval begin

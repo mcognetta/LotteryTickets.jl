@@ -25,3 +25,5 @@ function ChainRulesCore.rrule(::typeof(Base.:*), m::MaskedMatrix, x::AbstractMat
     end
     return y, foo_mul_pullback
 end
+
+# function ChainRulesCore.rrule(::typeof(MaskedConv), )
