@@ -16,3 +16,6 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MLDatasets = "eb30cadb-4394-5ae3-aed4-317e484a6458"
 OneHotArrays = "0b1bfda6-eb8a-41d2-88d8-f5af5cad476f"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+
+[compat]
+MLDatasets = "0.7"
