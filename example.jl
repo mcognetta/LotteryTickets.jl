@@ -29,9 +29,9 @@ using LotteryTickets
 @kwdef mutable struct Args
     η::Float64 =  0.0005        ## learning rate
     batchsize::Int = 32         ## batch size
-    epochs::Int = 3            ## number of epochs
+    epochs::Int = 15            ## number of epochs
     use_cuda::Bool = true       ## use gpu (if cuda available)
-    use_conv_model::Bool = true ## MLP or CNN
+    use_conv_model::Bool = false ## MLP or CNN
 end
 
 # If a GPU is available on our local system, then Flux uses it for computing the loss and updating the weights and biases when training our model.
@@ -45,8 +45,8 @@ function getdata(args, device)
     ENV["DATADEPS_ALWAYS_ACCEPT"] = "true"
 
     ## Load dataset	
-    xtrain, ytrain = MLDatasets.MNIST(:train)[:]
-    xtest, ytest = MLDatasets.MNIST(:test)[:]
+    xtrain, ytrain = MLDatasets.CIFAR10(:train)[:]
+    xtest, ytest = MLDatasets.CIFAR10(:test)[:]
 
     if args.use_conv_model
 
@@ -96,10 +96,10 @@ end
 
 
 function build_model(; imgsize=(28,28,1), nclasses=10)
-    return Chain( MaskedDense(prod(imgsize) => 64, relu),
-                  MaskedDense(64 => 64, relu),
-                  MaskedDense(64 => 32, relu),
-                  MaskedDense(32 => nclasses))
+    return Chain( MaskedDense(Dense(prod(imgsize) => 512, relu)),
+                  MaskedDense(Dense(512 => 256, relu)),
+                  MaskedDense(Dense(256 => 128, relu)),
+                  Dense(128 => nclasses))
 end
 
 function build_conv_model(; imgsize=(28, 28, 1), nclasses = 10)
@@ -156,11 +156,11 @@ end
 
 # Now, we define the `train` function that calls the functions defined above and trains the model.
 
+loss(m, x, y) = logitcrossentropy(m(x), y)
+
 function train(model, opt, args, train, test; kws...)
 
-
-
-    ps = Flux.params(model) ## model's trainable parameters
+    opt_state = Flux.setup(opt, model)
     
     ## Training
     for epoch in 1:args.epochs
@@ -170,16 +170,18 @@ function train(model, opt, args, train, test; kws...)
         #     Flux.Optimise.update!(opt, ps, gs) ## update parameters
         # end
 
-        for (x, y) in train
-            loss, grad = Flux.withgradient(ps) do
-                # Evaluate model and loss inside gradient context:
-                # y_hat = model(x)
-                # Flux.crossentropy(y_hat, y)
-                logitcrossentropy(model(x), y)
-            end
-            Flux.update!(opt, ps, grad)
-            # push!(losses, loss)  # logging, outside gradient context
-        end
+        # for (x, y) in train
+        #     loss, grad = Flux.withgradient(ps) do
+        #         # Evaluate model and loss inside gradient context:
+        #         # y_hat = model(x)
+        #         # Flux.crossentropy(y_hat, y)
+        #         logitcrossentropy(model(x), y)
+        #     end
+        #     Flux.update!(opt, ps, grad)
+        #     # push!(losses, loss)  # logging, outside gradient context
+        # end
+
+        Flux.train!(loss, model, train, opt_state)
 
         ## Report on train and test
         train_loss, train_acc = loss_and_accuracy(train, model)
@@ -221,13 +223,17 @@ function schedule(rounds; kws...)
     device = args.use_cuda ? gpu : cpu
     # model = build_old_model() |> device
 
-    if args.use_conv_model
-        model = build_conv_model() |> device
-        pruner = LotteryTickets.PruneGroup([model[1].weight, model[3].weight, model[6].weight, model[7].weight])
-    else
-        model = build_model() |> device
-        pruner = LotteryTickets.PruneGroup([model[1].weight, model[2].weight, model[3].weight])
-    end
+    # if args.use_conv_model
+    #     model = build_conv_model() |> device
+    #     pruner = LotteryTickets.PruneGroup([model[1].weight, model[3].weight, model[6].weight, model[7].weight])
+    # else
+    #     model = build_model() |> device
+    #     pruner = LotteryTickets.PruneGroup([model[1].weight, model[2].weight, model[3].weight])
+    # end
+
+    model = build_model(;imgsize = (32,32,3)) |> device
+    pruner = LotteryTickets.PruneGroup([model[1], model[2], model[3]], 0.15)
+
     ## Create test and train dataloaders
     train_loader, test_loader = getdata(args, device)
     ## Optimizer
@@ -237,14 +243,8 @@ function schedule(rounds; kws...)
     for r in 1:rounds-1
         @info "ROUND $r"
         train(model, opt, args, train_loader, test_loader)
-        # push!(models, model)
 
-        # new = deepcopy(model)
-        # for p in Flux.params(model)
-        #     LotteryTickets.prune_and_restore!(p, .15, true)
-        #     # LotteryTickets.rewind!(p) ## , Flux.glorot_uniform)
-        # end
-        LotteryTickets.prune_and_restore!(pruner, 0.10, true)
+        LotteryTickets.pruneandrewind!(pruner, true)
 
         CUDA.reclaim()
         # model = new
