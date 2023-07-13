@@ -7,7 +7,7 @@
 # maybe make these error?
 sparsify(x) = x
 checkpoint!(x) = x
-rewind!(x) = x
+rewind!(x, zerooutweights::Bool) = x
 prunableweights(x) = nothing
 prunableweightmasks(x) = nothing
 prunableweightorigins(x) = nothing
@@ -26,7 +26,9 @@ struct PrunableDense <: AbstractPrunableLayer
     mask::Any
 end
 
-Flux.@functor PrunableDense (d,)
+Flux.@functor PrunableDense
+
+Flux.trainable(d::PrunableDense) = (; d = d.d)
 
 PrunableDense(w::AbstractMatrix, b, σ) = PrunableDense(Dense(w, b, σ))
 
@@ -48,7 +50,8 @@ prunableweightmasks(f::PrunableDense) = (f.mask,)
 prunableweightorigins(f::PrunableDense) = (f.orig,)
 
 checkpoint!(f::PrunableDense) = (f.orig .= f.d.weight; f)
-rewind!(f::PrunableDense) = (f.d.weight .= f.orig; f)
+rewind!(f::PrunableDense, zerooutweights::Bool = false) =
+    (f.d.weight .= f.orig; zerooutweights && f.d.weight .*= f.mask; f)
 
 function Base.copyto!(dest::PrunableDense, orig::PrunableDense)
     # # simplify when copyto! is upstreamed to Flux
@@ -72,10 +75,6 @@ function PrunableDense(d::Dense)
     PrunableDense(d, orig, mask)
 end
 
-# function PrunableDense(x::AbstractMatrix)
-#     PrunableDense(Dense(x))
-# end
-
 Zygote.@adjoint function (f::PrunableDense)(x)
 
     pb = Zygote._pullback(f.d, x)[2]
@@ -83,9 +82,7 @@ Zygote.@adjoint function (f::PrunableDense)(x)
     function inner_pb(y)
         grad, val = pb(y)
         weight = grad.weight
-        newgrad = (;
-            d = merge(grad, (; weight = weight .* f.mask)),
-        )
+        newgrad = (; d = merge(grad, (; weight = weight .* f.mask)))
         return newgrad, val
     end
 
@@ -123,6 +120,7 @@ PrunableRNNCell(
 )
 
 Flux.@functor PrunableRNNCell
+Flux.trainable(r::PrunableRNNCell) = (; cell = r.cell)
 
 prunableweights(f::PrunableRNNCell) = (f.cell.Wh, f.cell.Wi)
 prunableweightmasks(f::PrunableRNNCell) = (f.mask_h, f.mask_i)
@@ -134,9 +132,11 @@ function checkpoint!(c::PrunableRNNCell)
     c
 end
 
-function rewind!(c::PrunableRNNCell)
+function rewind!(c::PrunableRNNCell, zerooutweights::Bool = false)
     c.cell.Wh .= c.orig_h
+    zerooutweights && c.cell.Wh .*= c.mask_h
     c.cell.Wi .= c.orig_i
+    zerooutweights && c.cell.Wi .*= c.mask_i
     c
 end
 
@@ -160,11 +160,8 @@ Zygote.@adjoint function (f::PrunableRNNCell)(x)
 
     function inner_pb(y)
         grad, val = pb(y)
-        newgrad = (;
-            d = merge(grad, (; Wi = cell.Wi .* f.mask_i, Wh = cell.Wh .* f.mask_h)),
-            orig = nothing,
-            mask = nothing,
-        )
+        newgrad =
+            (; d = merge(grad, (; Wi = cell.Wi .* f.mask_i, Wh = cell.Wh .* f.mask_h)))
         return newgrad, val
     end
     return f(x), inner_pb
@@ -190,6 +187,7 @@ PrunableLSTMCell(
 )
 
 Flux.@functor PrunableLSTMCell
+Flux.trainable(r::PrunableLSTMCell) = (; cell = r.cell)
 
 prunableweights(f::PrunableLSTMCell) = (f.cell.Wh, f.cell.Wi)
 prunableweightmasks(f::PrunableLSTMCell) = (f.mask_h, f.mask_i)
@@ -201,9 +199,11 @@ function checkpoint!(c::PrunableLSTMCell)
     c
 end
 
-function rewind!(c::PrunableLSTMCell)
+function rewind!(c::PrunableLSTMCell, zerooutweights::Bool = false)
     c.cell.Wh .= c.orig_h
+    zerooutweights && c.cell.Wh .*= c.mask_h
     c.cell.Wi .= c.orig_i
+    zerooutweights && c.cell.Wh .*= c.mask_h
     c
 end
 
@@ -227,11 +227,8 @@ Zygote.@adjoint function (f::PrunableLSTMCell)(x)
 
     function inner_pb(y)
         grad, val = pb(y)
-        newgrad = (;
-            d = merge(grad, (; Wi = cell.Wi .* f.mask_i, Wh = cell.Wh .* f.mask_h)),
-            orig = nothing,
-            mask = nothing,
-        )
+        newgrad =
+            (; d = merge(grad, (; Wi = cell.Wi .* f.mask_i, Wh = cell.Wh .* f.mask_h)))
         return newgrad, val
     end
     return f(x), inner_pb
@@ -260,6 +257,7 @@ PrunableGRUCell(
 )
 
 Flux.@functor PrunableGRUCell
+Flux.trainable(c::PrunableGRUCell) = (; cell = c.cell)
 
 prunableweights(f::PrunableGRUCell) = (f.cell.Wh, f.cell.Wi)
 prunableweightmasks(f::PrunableGRUCell) = (f.mask_h, f.mask_i)
@@ -271,9 +269,11 @@ function checkpoint!(c::PrunableGRUCell)
     c
 end
 
-function rewind!(c::PrunableGRUCell)
+function rewind!(c::PrunableGRUCell, zerooutweights::Bool = false)
     c.cell.Wh .= c.orig_h
+    zerooutweights && c.cell.Wh .*= c.mask_h
     c.cell.Wi .= c.orig_i
+    zerooutweights && c.cell.Wi .*= c.mask_i
     c
 end
 
@@ -297,11 +297,8 @@ Zygote.@adjoint function (f::PrunableGRUCell)(x)
 
     function inner_pb(y)
         grad, val = pb(y)
-        newgrad = (;
-            d = merge(grad, (; Wi = cell.Wi .* f.mask_i, Wh = cell.Wh .* f.mask_h)),
-            orig = nothing,
-            mask = nothing,
-        )
+        newgrad =
+            (; d = merge(grad, (; Wi = cell.Wi .* f.mask_i, Wh = cell.Wh .* f.mask_h)))
         return newgrad, val
     end
     return f(x), inner_pb
@@ -329,6 +326,8 @@ PrunableGRUv3Cell(
 )
 
 Flux.@functor PrunableGRUv3Cell
+Flux.trainable(c::PrunableGRUv3Cell) = (; cell = c.cell)
+
 
 prunableweights(f::PrunableGRUv3Cell) = (f.cell.Wh, f.cell.Wi)
 prunableweightmasks(f::PrunableGRUv3Cell) = (f.mask_h, f.mask_i)
@@ -341,10 +340,13 @@ function checkpoint!(c::PrunableGRUv3Cell)
     c
 end
 
-function rewind!(c::PrunableGRUv3Cell)
+function rewind!(c::PrunableGRUv3Cell, zerooutweights::Bool = false)
     c.cell.Wh .= c.orig_h
+    zerooutweights && c.cell.Wh .*= c.mask_h
     c.cell.Wi .= c.orig_i
+    zerooutweights && c.cell.Wi .*= c.mask_i
     c.cell.Wh_h̃ .= c.orig_hh
+    zerooutweights && c.cell.Wh_h̃ .*= c.mask_hh
     c
 end
 
@@ -379,9 +381,7 @@ Zygote.@adjoint function (f::PrunableGRUv3Cell)(x)
                     Wh = cell.Wh .* f.mask_h,
                     Wh_h̃ = cell.Wh_h̃ .* f.mask_hh,
                 ),
-            ),
-            orig = nothing,
-            mask = nothing,
+            )
         )
         return newgrad, val
     end
@@ -414,6 +414,7 @@ struct PrunableConv <: AbstractPrunableLayer
 end
 
 Flux.@functor PrunableConv
+Flux.trainable(c::PrunableConv) = (; c = c.c)
 
 function PrunableConv(c)
     orig = deepcopy(c.weight)
@@ -427,7 +428,8 @@ prunableweightorigins(f::PrunableConv) = (f.orig,)
 
 checkpoint!(c::PrunableConv) = (c.orig .= c.c.weight; c)
 
-rewind!(c::PrunableConv) = (c.c.weight .= c.orig; c)
+rewind!(c::PrunableConv, zerooutweights::Bool = false) =
+    (c.c.weight .= c.orig; zerooutweight && c.c.weight .*= c.mask; c)
 
 (f::PrunableConv)(x) = (f.c.weight .*= f.mask; f.c(x))
 
@@ -438,11 +440,7 @@ Zygote.@adjoint function (f::PrunableConv)(x)
     function inner_pb(y)
         grad, val = pb(y)
         weight = grad.weight
-        newgrad = (;
-            d = merge(grad, (; weight = weight .* f.mask)),
-            orig = nothing,
-            mask = nothing,
-        )
+        newgrad = (; d = merge(grad, (; weight = weight .* f.mask)))
         return newgrad, val
     end
 

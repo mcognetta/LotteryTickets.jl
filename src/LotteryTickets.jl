@@ -13,8 +13,9 @@ using Flux: @functor
 using Zygote: @adjoint
 using CUDA: CuArray
 
-export MaskedDense, MaskedConv, MaskedRNNCell, prunableweights, prunableweightmasks, prunableweightorigins
-export Pruner, PruneGroup, prune!, pruneandrewind!, rewind!
+export PrunableDense, PrunableRNNCell, PruneableRNN
+export prunableweights, prunableweightmasks, prunableweightorigins
+export Pruner, MagnitudePruneGroup, prune!, pruneandrewind!, rewind!
 
 
 

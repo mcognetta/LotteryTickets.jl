@@ -14,7 +14,7 @@
 
 # To run this example, we need the following packages:
 
-using Revise
+using Revise, Optimisers
 using Flux, Statistics
 using Flux.Data: DataLoader
 using Flux: onehotbatch, onecold, @epochs
@@ -45,11 +45,10 @@ function getdata(args, device)
     ENV["DATADEPS_ALWAYS_ACCEPT"] = "true"
 
     ## Load dataset	
-    xtrain, ytrain = MLDatasets.CIFAR10(:train)[:]
-    xtest, ytest = MLDatasets.CIFAR10(:test)[:]
-
     if args.use_conv_model
-
+        xtrain, ytrain = MLDatasets.CIFAR10(:train)[:]
+        xtest, ytest = MLDatasets.CIFAR10(:test)[:]
+    
         train4dim = reshape(xtrain, 28,28,1,:)    # insert trivial channel dim
         trainyhot = Flux.onehotbatch(ytrain, 0:9)  # make a 10×60000 OneHotMatrix
         train_loader = Flux.DataLoader((train4dim, trainyhot) |> device; batchsize=args.batchsize, shuffle=true)
@@ -60,7 +59,9 @@ function getdata(args, device)
 
         return train_loader, test_loader
     else
-
+        xtrain, ytrain = MLDatasets.MNIST(:train)[:]
+        xtest, ytest = MLDatasets.MNIST(:test)[:]
+    
         ## Reshape input data to flatten each image into a linear array
         xtrain = Flux.flatten(xtrain)
         xtest = Flux.flatten(xtest)
@@ -95,11 +96,19 @@ end
 # We define the model with the `build_model` function: 
 
 
-function build_model(; imgsize=(28,28,1), nclasses=10)
-    return Chain( MaskedDense(Dense(prod(imgsize) => 512, relu)),
-                  MaskedDense(Dense(512 => 256, relu)),
-                  MaskedDense(Dense(256 => 128, relu)),
-                  Dense(128 => nclasses))
+# function build_model(; imgsize=(28,28,1), nclasses=10)
+#     return Chain( MaskedDense(Dense(prod(imgsize) => 512, relu)),
+#                   MaskedDense(Dense(512 => 256, relu)),
+#                   MaskedDense(Dense(256 => 128, relu)),
+#                   Dense(128 => nclasses))
+# end
+
+function build_model(; imgsize = (28, 28, 1), nclasses=10)
+
+    return Chain(PrunableDense(prod(imgsize) => 512, relu),
+                 PrunableDense(512 => 256, relu), 
+                 PrunableDense(256 => 128, relu),
+                 Dense(128 => nclasses))
 end
 
 function build_conv_model(; imgsize=(28, 28, 1), nclasses = 10)
@@ -160,7 +169,7 @@ loss(m, x, y) = logitcrossentropy(m(x), y)
 
 function train(model, opt, args, train, test; kws...)
 
-    opt_state = Flux.setup(opt, model)
+    opt_state = Optimisers.setup(opt, model)
     
     ## Training
     for epoch in 1:args.epochs
@@ -211,7 +220,7 @@ end
 
 function main(;kws...)
     CUDA.allowscalar(false)
-    model, opt = schedule(10; kws...)
+    model, opt = schedule(5; kws...)
     return model, opt
 end
 
@@ -223,22 +232,22 @@ function schedule(rounds; kws...)
     device = args.use_cuda ? gpu : cpu
     # model = build_old_model() |> device
 
-    # if args.use_conv_model
-    #     model = build_conv_model() |> device
-    #     pruner = LotteryTickets.PruneGroup([model[1].weight, model[3].weight, model[6].weight, model[7].weight])
-    # else
-    #     model = build_model() |> device
-    #     pruner = LotteryTickets.PruneGroup([model[1].weight, model[2].weight, model[3].weight])
-    # end
+    if args.use_conv_model
+        model = build_conv_model() |> device
+        pruner = LotteryTickets.MagnitudePruneGroup([model[1].weight, model[3].weight, model[6].weight, model[7].weight])
+    else
+        model = build_model() |> device
+        pruner = LotteryTickets.MagnitudePruneGroup([model[1], model[2], model[3]], 0.1)
+    end
 
-    model = build_model(;imgsize = (32,32,3)) |> device
-    pruner = LotteryTickets.PruneGroup([model[1], model[2], model[3]], 0.15)
+    # model = build_model(;imgsize = (32,32,3)) |> device
+    # pruner = LotteryTickets.PruneGroup([model[1], model[2], model[3]], 0.15)
 
     ## Create test and train dataloaders
     train_loader, test_loader = getdata(args, device)
     ## Optimizer
 
-    opt = ADAM(args.η)
+    opt = Optimisers.Descent(args.η)
     # model, opt = train(model, opt, args)
     for r in 1:rounds-1
         @info "ROUND $r"
