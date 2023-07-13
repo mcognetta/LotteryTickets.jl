@@ -1,5 +1,13 @@
+
+abstract type AbstractPruneGroup end
+
+struct MagnitudePruneGroup
+    layers::Vector{<:AbstractPrunableLayer}
+    p::Float64
+end
+
 struct Pruner
-    groups::Vector{PruneGroup}
+    groups::Vector{AbstractPruneGroup}
 end
 
 function prune!(p::Pruner)
@@ -8,14 +16,9 @@ function prune!(p::Pruner)
     end
 end
 
-struct PruneGroup
-    layers::Vector{<:AbstractPrunableLayer}
-    p::Float64
-end
+function _gpu_prune!(g::MagnitudePruneGroup, zerooutweights::Bool = false)
 
-function _gpu_prune!(g::PruneGroup, zerooutweights::Bool = false)
-
-    cpu_group = PruneGroup(cpu.(g.layers), g.p)
+    cpu_group = MagnitudePruneGroup(cpu.(g.layers), g.p)
 
     _cpu_prune!(cpu_group, zerooutweights)
     for (cm, gm) in zip(cpu_group.layers, g.layers)
@@ -24,7 +27,7 @@ function _gpu_prune!(g::PruneGroup, zerooutweights::Bool = false)
     g
 end
 
-function _cpu_prune!(g::PruneGroup, zerooutweights::Bool = false)
+function _cpu_prune!(g::MagnitudePruneGroup, zerooutweights::Bool = false)
     L = 0
 
     v = Vector{Any}()
@@ -52,7 +55,7 @@ function _cpu_prune!(g::PruneGroup, zerooutweights::Bool = false)
     g
 end
 
-function prune!(g::PruneGroup, zerooutweights::Bool = false)
+function prune!(g::MagnitudePruneGroup, zerooutweights::Bool = false)
     if all(
         mask isa CuArray for l in g.layers for mask in LotteryTickets.prunableweightmasks(l)
     )
@@ -63,21 +66,14 @@ function prune!(g::PruneGroup, zerooutweights::Bool = false)
     g
 end
 
-function rewind!(g, zerooutweights::Bool = false)
+function rewind!(g::MagnitudePruneGroup, zerooutweights::Bool = false)
     for layer in g.layers
-        for (weight, orig, mask) in zip(
-            prunableweights(layer),
-            prunableweightmasks(layer),
-            prunableweightmasks(layer),
-        )
-            weight .*= orig
-            zerooutweights && weight .*= mask
-        end
+        rewind!(layer, zerooutweights)
     end
     g
 end
 
-function pruneandrewind!(g::PruneGroup, zerooutweights::Bool = false)
+function pruneandrewind!(g::MagnitudePruneGroup, zerooutweights::Bool = false)
     prune!(g, zerooutweights)
     rewind!(g, zerooutweights)
     g
