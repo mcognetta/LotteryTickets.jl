@@ -29,9 +29,10 @@ using LotteryTickets
 @kwdef mutable struct Args
     η::Float64 =  0.0005        ## learning rate
     batchsize::Int = 32         ## batch size
-    epochs::Int = 15            ## number of epochs
+    epochs::Int = 10             ## number of epochs
     use_cuda::Bool = true       ## use gpu (if cuda available)
     use_conv_model::Bool = false ## MLP or CNN
+    prune::Bool = true
 end
 
 # If a GPU is available on our local system, then Flux uses it for computing the loss and updating the weights and biases when training our model.
@@ -111,6 +112,14 @@ function build_model(; imgsize = (28, 28, 1), nclasses=10)
                  Dense(128 => nclasses))
 end
 
+function build_old_model(; imgsize = (28, 28, 1), nclasses=10)
+
+    return Chain(Dense(prod(imgsize) => 512, relu),
+                 Dense(512 => 256, relu), 
+                 Dense(256 => 128, relu),
+                 Dense(128 => nclasses))
+end
+
 function build_conv_model(; imgsize=(28, 28, 1), nclasses = 10)
     return Chain(
         LotteryTickets.MaskedConv((5, 5), 1=>6, relu),
@@ -124,14 +133,6 @@ function build_conv_model(; imgsize=(28, 28, 1), nclasses = 10)
     )
 end
 
-function build_old_model(; imgsize=(28,28,1), nclasses=10)
-    # return Chain( MaskedDense(prod(imgsize) => 64, relu),
-    #               MaskedDense(64 => 32, relu),
-    #               MaskedDense(32 => nclasses))
-    return Chain( Dense(prod(imgsize) => 64, relu),
-                Dense(64 => 32,  relu),
-                Dense(32 => nclasses))
-end
 
 # Note that we use the functions [Dense](https://fluxml.ai/Flux.jl/stable/models/layers/#Flux.Dense) so that our model is *densely* (or fully) connected and [Chain](https://fluxml.ai/Flux.jl/stable/models/layers/#Flux.Chain) to chain the computation of the three layers.
 
@@ -220,7 +221,11 @@ end
 
 function main(;kws...)
     CUDA.allowscalar(false)
-    model, opt = schedule(5; kws...)
+    if Args().prune
+        model, opt = schedule(5; kws...)
+    else
+        model, opt = train(; kws...)
+    end
     return model, opt
 end
 
@@ -261,6 +266,32 @@ function schedule(rounds; kws...)
     @info "ROUND $rounds (last round)"
     train(model, opt, args, train_loader, test_loader)
 
+    test_loss, test_acc = loss_and_accuracy(test_loader, model)
+    println("FINAL LOSS AND ACCURACY  test_loss = $test_loss, test_accuracy = $test_acc")
+    model, opt
+end
+
+
+function train(; kws...)
+    # models = Vector{Any}()
+    args = Args(; kws...) ## Collect options in a struct for convenience
+    device = args.use_cuda ? gpu : cpu
+    # model = build_old_model() |> device
+
+    model = build_old_model() |> device
+
+    # model = build_model(;imgsize = (32,32,3)) |> device
+    # pruner = LotteryTickets.PruneGroup([model[1], model[2], model[3]], 0.15)
+
+    ## Create test and train dataloaders
+    train_loader, test_loader = getdata(args, device)
+    opt = Optimisers.Descent(args.η)
+    train(model, opt, args, train_loader, test_loader)
+
+    ## Optimizer
+
+    # model, opt = train(model, opt, args)
+    train(model, opt, args, train_loader, test_loader)
     test_loss, test_acc = loss_and_accuracy(test_loader, model)
     println("FINAL LOSS AND ACCURACY  test_loss = $test_loss, test_accuracy = $test_acc")
     model, opt

@@ -1,31 +1,33 @@
 module LotteryTickets
 
-# using Adapt, LinearAlgebra, SparseArrays, CUDA, ChainRulesCore, ChainRules, ArrayInterface, ArrayInterfaceCore, Flux, OneHotArrays, GPUArraysCore
-
-# import Base: copy, copyto!, size, length, trues, getindex, setindex!, vec, similar
-# import Base: +, -, *, ==
-# import Base: show
-# using Base.Broadcast: BroadcastStyle, Broadcasted
-# import Flux: create_bias, @functor, adapt_storage, FluxCUDAAdaptor
-
 using Flux, Zygote, CUDA
 using Flux: @functor
 using Zygote: @adjoint
 using CUDA: CuArray
+using SparseArrays
 
-export PrunableDense, PrunableRNNCell, PruneableRNN
-export prunableweights, prunableweightmasks, prunableweightorigins
-export Pruner, MagnitudePruneGroup, prune!, pruneandrewind!, rewind!
-
-
-
-# Write your package code here.
-# include("core.jl")
-# include("rrules.jl")
-# include("layers.jl")
+export AbstractPrunableLayer,
+    PrunableDense,
+    PrunableRNNCell,
+    PrunableLSTMCell,
+    PrunableGRUCell,
+    PrunableGRUv3Cell,
+    PrunableRNN,
+    PrunableLSTM,
+    PrunableGRU,
+    PrunableGRUv3,
+    PrunableConv,
+    PrunableMultiHeadAttention
+export sparsify,
+    checkpoint!,
+    rewind!,
+    applymask!,
+    prunableweights,
+    prunableweightmasks,
+    prunableweightorigins
+export AbstractPruneGroup, Pruner, MagnitudePruneGroup, prune!, pruneandrewind!, rewind!
 
 include("layers.jl")
 include("pruner.jl")
-
 
 end

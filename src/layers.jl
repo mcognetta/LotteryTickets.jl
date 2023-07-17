@@ -1,18 +1,22 @@
 # TODO:
-#    - add matching Flux constructors
-#    - correct interface for non-prunable layers
-#    - add typing information to mask / orig weights
 #    - add disk-stored layer origins
+#    - type-stability tests
+#    - macro
 
 # maybe make these error?
-sparsify(x) = x
 checkpoint!(x) = x
-rewind!(x, zerooutweights::Bool) = x
+rewind!(x) = x
 prunableweights(x) = nothing
 prunableweightmasks(x) = nothing
 prunableweightorigins(x) = nothing
 
 abstract type AbstractPrunableLayer end
+
+_prunable(l) = false
+_prunable(::AbstractPrunableLayer) = true
+
+sparsify(m) = Functors.fmap(sparsify, m; exclude = _prunable)
+sparsify(l::AbstractPrunableLayer) = _sparisfy(l)
 
 #####################################
 #
@@ -20,10 +24,10 @@ abstract type AbstractPrunableLayer end
 #
 #####################################
 
-struct PrunableDense <: AbstractPrunableLayer
-    d::Dense
-    orig::Any
-    mask::Any
+struct PrunableDense{D<:Flux.Dense,O,M} <: AbstractPrunableLayer
+    d::D
+    orig::O
+    mask::M
 end
 
 Flux.@functor PrunableDense
@@ -41,17 +45,15 @@ function PrunableDense(
     PrunableDense(Dense(init(out, in), bias, σ))
 end
 
-function sparsify(d::PrunableDense)
-    Dense(sparse(d.weight), d.bias, d.σ)
+function PrunableDense(d::Dense)
+    orig = deepcopy(d.weight)
+    mask = similar(orig, Bool) .= true
+    PrunableDense(d, orig, mask)
 end
 
 prunableweights(f::PrunableDense) = (f.d.weight,)
 prunableweightmasks(f::PrunableDense) = (f.mask,)
 prunableweightorigins(f::PrunableDense) = (f.orig,)
-
-checkpoint!(f::PrunableDense) = (f.orig .= f.d.weight; f)
-rewind!(f::PrunableDense, zerooutweights::Bool = false) =
-    (f.d.weight .= f.orig; zerooutweights && f.d.weight .*= f.mask; f)
 
 function Base.copyto!(dest::PrunableDense, orig::PrunableDense)
     # # simplify when copyto! is upstreamed to Flux
@@ -65,14 +67,8 @@ function Base.copyto!(dest::PrunableDense, orig::PrunableDense)
 end
 
 function (f::PrunableDense)(x)
-    f.d.weight .*= f.mask
+    # f.d.weight .*= f.mask
     f.d(x)
-end
-
-function PrunableDense(d::Dense)
-    orig = deepcopy(d.weight)
-    mask = similar(orig, Bool) .= true
-    PrunableDense(d, orig, mask)
 end
 
 Zygote.@adjoint function (f::PrunableDense)(x)
@@ -89,6 +85,10 @@ Zygote.@adjoint function (f::PrunableDense)(x)
     return f(x), inner_pb
 end
 
+function _sparisfy(d::PrunableDense)
+    Flux.Dense(sparse(d.d.weight), d.d.bias, d.d.σ)
+end
+
 #####################################
 #
 # Recurrent Layers
@@ -101,12 +101,12 @@ Flux.reset!(r::Flux.Recur{<:AbstractPrunableRecurrentCell}) = (r.state = r.cell.
 
 # RNN
 
-struct PrunableRNNCell <: AbstractPrunableRecurrentCell
-    cell::Any
-    mask_h::Any
-    mask_i::Any
-    orig_h::Any
-    orig_i::Any
+struct PrunableRNNCell{C<:Flux.RNNCell,MH,MI,OH,OI} <: AbstractPrunableRecurrentCell
+    cell::C
+    mask_h::MH
+    mask_i::MI
+    orig_h::OH
+    orig_i::OI
 end
 
 PrunableRNNCell(
@@ -118,6 +118,30 @@ PrunableRNNCell(
 ) = PrunableRNNCell(
     Flux.RNNCell(in => out, σ; init = init, initb = initb, init_state = init_state),
 )
+
+function PrunableRNNCell(c::Flux.RNNCell)
+    orig_h = deepcopy(c.Wh)
+    orig_i = deepcopy(c.Wi)
+    mask_h = similar(orig_h, Bool) .= true
+    mask_i = similar(orig_i, Bool) .= true
+    PrunableRNNCell(c, mask_h, mask_i, orig_h, orig_i)
+end
+
+function Base.copyto!(dest::PrunableRNNCell, orig::PrunableRNNCell)
+    # # simplify when copyto! is upstreamed to Flux
+    # # copyto!(dest.d, orig.d)
+    copyto!(dest.cell.Wh, orig.cell.Wh)
+    copyto!(dest.cell.Wi, orig.cell.Wi)
+    copyto!(dest.cell.b, orig.cell.b)
+    copyto!(dest.cell.state0, orig.cell.state0)
+
+    copyto!(dest.orig_h, orig.orig_h)
+    copyto!(dest.orig_i, orig.orig_i)
+    copyto!(dest.mask_h, orig.mask_h)
+    copyto!(dest.mask_i, orig.mask_i)
+    dest
+end
+
 
 Flux.@functor PrunableRNNCell
 Flux.trainable(r::PrunableRNNCell) = (; cell = r.cell)
@@ -132,49 +156,41 @@ function checkpoint!(c::PrunableRNNCell)
     c
 end
 
-function rewind!(c::PrunableRNNCell, zerooutweights::Bool = false)
-    c.cell.Wh .= c.orig_h
-    zerooutweights && c.cell.Wh .*= c.mask_h
-    c.cell.Wi .= c.orig_i
-    zerooutweights && c.cell.Wi .*= c.mask_i
+function rewind!(c::PrunableRNNCell)
+    c.cell.Wh .= c.orig_h .* c.mask_h
+    c.cell.Wi .= c.orig_i .* c.mask_i
     c
 end
 
 function (f::PrunableRNNCell)(x, y)
-    f.cell.Wh .*= f.mask_h
-    f.cell.Wi .*= f.mask_i
+    # f.cell.Wh .*= f.mask_h
+    # f.cell.Wi .*= f.mask_i
     f.cell(x, y)
 end
 
-function PrunableRNNCell(c::Flux.RNNCell)
-    orig_h = deepcopy(c.Wh)
-    orig_i = deepcopy(c.Wi)
-    mask_h = similar(orig_h, Bool) .= true
-    mask_i = similar(orig_i, Bool) .= true
-    PrunableRNNCell(c, mask_h, mask_i, orig_h, orig_i)
+Zygote.@adjoint function (f::PrunableRNNCell)(h, x)
+    out, pb = Zygote._pullback(f.cell, h, x)
+    function inner_pb(y)
+        grad, val... = pb(y)
+        newgrad =
+            (; cell = merge(grad, (; Wi = grad.Wi .* f.mask_i, Wh = grad.Wh .* f.mask_h)))
+        return newgrad, val...
+    end
+    return f(h, x), inner_pb
 end
 
-Zygote.@adjoint function (f::PrunableRNNCell)(x)
-
-    pb = Zygote._pullback(f.r, x)[2]
-
-    function inner_pb(y)
-        grad, val = pb(y)
-        newgrad =
-            (; d = merge(grad, (; Wi = cell.Wi .* f.mask_i, Wh = cell.Wh .* f.mask_h)))
-        return newgrad, val
-    end
-    return f(x), inner_pb
+function _sparisfy(r::PrunableRNNCell)
+    Flux.RNNCell(r.cell.σ, sparse(r.cell.Wi), sparse(r.cell.Wh), r.cell.b, r.cell.state0)
 end
 
 # LSTM
 
-struct PrunableLSTMCell <: AbstractPrunableRecurrentCell
-    cell::Any
-    mask_h::Any
-    mask_i::Any
-    orig_h::Any
-    orig_i::Any
+struct PrunableLSTMCell{C<:Flux.LSTMCell,MH,MI,OH,OI} <: AbstractPrunableRecurrentCell
+    cell::C
+    mask_h::MH
+    mask_i::MI
+    orig_h::OH
+    orig_i::OI
 end
 
 PrunableLSTMCell(
@@ -186,33 +202,6 @@ PrunableLSTMCell(
     Flux.LSTMCell(in => out; init = init, initb = initb, init_state = init_state),
 )
 
-Flux.@functor PrunableLSTMCell
-Flux.trainable(r::PrunableLSTMCell) = (; cell = r.cell)
-
-prunableweights(f::PrunableLSTMCell) = (f.cell.Wh, f.cell.Wi)
-prunableweightmasks(f::PrunableLSTMCell) = (f.mask_h, f.mask_i)
-prunableweightorigins(f::PrunableLSTMCell) = (f.orig_h, f.orig_i)
-
-function checkpoint!(c::PrunableLSTMCell)
-    c.orig_h .= c.cell.Wh
-    c.orig_i .= c.cell.Wi
-    c
-end
-
-function rewind!(c::PrunableLSTMCell, zerooutweights::Bool = false)
-    c.cell.Wh .= c.orig_h
-    zerooutweights && c.cell.Wh .*= c.mask_h
-    c.cell.Wi .= c.orig_i
-    zerooutweights && c.cell.Wh .*= c.mask_h
-    c
-end
-
-function (f::PrunableLSTMCell)(x, y)
-    f.cell.Wh .*= f.mask_h
-    f.cell.Wi .*= f.mask_i
-    f.cell(x, y)
-end
-
 function PrunableLSTMCell(c::Flux.LSTMCell)
     orig_h = deepcopy(c.Wh)
     orig_i = deepcopy(c.Wi)
@@ -221,27 +210,58 @@ function PrunableLSTMCell(c::Flux.LSTMCell)
     PrunableLSTMCell(c, mask_h, mask_i, orig_h, orig_i)
 end
 
-Zygote.@adjoint function (f::PrunableLSTMCell)(x)
+function Base.copyto!(dest::PrunableLSTMCell, orig::PrunableLSTMCell)
+    # # simplify when copyto! is upstreamed to Flux
+    # # copyto!(dest.d, orig.d)
+    copyto!(dest.cell.Wh, orig.cell.Wh)
+    copyto!(dest.cell.Wi, orig.cell.Wi)
+    copyto!(dest.cell.b, orig.cell.b)
+    copyto!.(dest.cell.state0, orig.cell.state0)
 
-    pb = Zygote._pullback(f.r, x)[2]
+    copyto!(dest.orig_h, orig.orig_h)
+    copyto!(dest.orig_i, orig.orig_i)
+    copyto!(dest.mask_h, orig.mask_h)
+    copyto!(dest.mask_i, orig.mask_i)
+    dest
+end
+
+Flux.@functor PrunableLSTMCell
+Flux.trainable(r::PrunableLSTMCell) = (; cell = r.cell)
+
+prunableweights(f::PrunableLSTMCell) = (f.cell.Wh, f.cell.Wi)
+prunableweightmasks(f::PrunableLSTMCell) = (f.mask_h, f.mask_i)
+prunableweightorigins(f::PrunableLSTMCell) = (f.orig_h, f.orig_i)
+
+function (f::PrunableLSTMCell)(x, y)
+    # f.cell.Wh .*= f.mask_h
+    # f.cell.Wi .*= f.mask_i
+    f.cell(x, y)
+end
+
+Zygote.@adjoint function (f::PrunableLSTMCell)(h, x)
+    pb = Zygote._pullback(f.cell, h, x)[2]
 
     function inner_pb(y)
-        grad, val = pb(y)
+        grad, val... = pb(y)
         newgrad =
-            (; d = merge(grad, (; Wi = cell.Wi .* f.mask_i, Wh = cell.Wh .* f.mask_h)))
-        return newgrad, val
+            (; cell = merge(grad, (; Wi = grad.Wi .* f.mask_i, Wh = grad.Wh .* f.mask_h)))
+        return newgrad, val...
     end
-    return f(x), inner_pb
+    return f(h, x), inner_pb
+end
+
+function _sparisfy(r::PrunableLSTMCell)
+    Flux.LSTMCell(sparse(r.cell.Wi), sparse(r.cell.Wh), r.cell.b, r.cell.state0)
 end
 
 # GRU
 
-struct PrunableGRUCell <: AbstractPrunableRecurrentCell
-    cell::Any
-    mask_h::Any
-    mask_i::Any
-    orig_h::Any
-    orig_i::Any
+struct PrunableGRUCell{C<:Flux.GRUCell,MH,MI,OH,OI} <: AbstractPrunableRecurrentCell
+    cell::C
+    mask_h::MH
+    mask_i::MI
+    orig_h::OH
+    orig_i::OI
 end
 
 PrunableGRUCell(
@@ -256,33 +276,6 @@ PrunableGRUCell(
     init_state = init_state,
 )
 
-Flux.@functor PrunableGRUCell
-Flux.trainable(c::PrunableGRUCell) = (; cell = c.cell)
-
-prunableweights(f::PrunableGRUCell) = (f.cell.Wh, f.cell.Wi)
-prunableweightmasks(f::PrunableGRUCell) = (f.mask_h, f.mask_i)
-prunableweightorigins(f::PrunableGRUCell) = (f.orig_h, f.orig_i)
-
-function checkpoint!(c::PrunableGRUCell)
-    c.orig_h .= c.cell.Wh
-    c.orig_i .= c.cell.Wi
-    c
-end
-
-function rewind!(c::PrunableGRUCell, zerooutweights::Bool = false)
-    c.cell.Wh .= c.orig_h
-    zerooutweights && c.cell.Wh .*= c.mask_h
-    c.cell.Wi .= c.orig_i
-    zerooutweights && c.cell.Wi .*= c.mask_i
-    c
-end
-
-function (f::PrunableGRUCell)(x, y)
-    f.cell.Wh .*= f.mask_h
-    f.cell.Wi .*= f.mask_i
-    f.cell(x, y)
-end
-
 function PrunableGRUCell(c::Flux.GRUCell)
     orig_h = deepcopy(c.Wh)
     orig_i = deepcopy(c.Wi)
@@ -291,29 +284,73 @@ function PrunableGRUCell(c::Flux.GRUCell)
     PrunableGRUCell(c, mask_h, mask_i, orig_h, orig_i)
 end
 
-Zygote.@adjoint function (f::PrunableGRUCell)(x)
+function Base.copyto!(dest::PrunableGRUCell, orig::PrunableGRUCell)
+    # # simplify when copyto! is upstreamed to Flux
+    # # copyto!(dest.d, orig.d)
+    copyto!(dest.cell.Wh, orig.cell.Wh)
+    copyto!(dest.cell.Wi, orig.cell.Wi)
+    copyto!(dest.cell.b, orig.cell.b)
+    copyto!(dest.cell.state0, orig.cell.state0)
 
-    pb = Zygote._pullback(f.r, x)[2]
+    copyto!(dest.orig_h, orig.orig_h)
+    copyto!(dest.orig_i, orig.orig_i)
+    copyto!(dest.mask_h, orig.mask_h)
+    copyto!(dest.mask_i, orig.mask_i)
+    dest
+end
+
+Flux.@functor PrunableGRUCell
+Flux.trainable(c::PrunableGRUCell) = (; cell = c.cell)
+
+prunableweights(f::PrunableGRUCell) = (f.cell.Wh, f.cell.Wi)
+prunableweightmasks(f::PrunableGRUCell) = (f.mask_h, f.mask_i)
+prunableweightorigins(f::PrunableGRUCell) = (f.orig_h, f.orig_i)
+
+function checkpoint!(c::PrunableGRUCell)
+    # c.orig_h .= c.cell.Wh
+    # c.orig_i .= c.cell.Wi
+    c
+end
+
+function rewind!(c::PrunableGRUCell)
+    c.cell.Wh .= c.orig_h .*= c.mask_h
+    c.cell.Wi .= c.orig_i .*= c.mask_i
+    c
+end
+
+function (f::PrunableGRUCell)(x, y)
+    # f.cell.Wh .*= f.mask_h
+    # f.cell.Wi .*= f.mask_i
+    f.cell(x, y)
+end
+
+Zygote.@adjoint function (f::PrunableGRUCell)(h, x)
+    pb = Zygote._pullback(f.cell, h, x)[2]
 
     function inner_pb(y)
-        grad, val = pb(y)
+        grad, val... = pb(y)
         newgrad =
-            (; d = merge(grad, (; Wi = cell.Wi .* f.mask_i, Wh = cell.Wh .* f.mask_h)))
-        return newgrad, val
+            (; cell = merge(grad, (; Wi = grad.Wi .* f.mask_i, Wh = grad.Wh .* f.mask_h)))
+        return newgrad, val...
     end
-    return f(x), inner_pb
+    return f(h, x), inner_pb
+end
+
+function _sparisfy(r::PrunableGRUCell)
+    Flux.GRUCell(sparse(r.cell.Wi), sparse(r.cell.Wh), r.cell.b, r.cell.state0)
 end
 
 # GRUv3
 
-struct PrunableGRUv3Cell <: AbstractPrunableRecurrentCell
-    cell::Any
-    mask_h::Any
-    mask_i::Any
-    mask_hh::Any
-    orig_h::Any
-    orig_i::Any
-    orig_hh::Any
+struct PrunableGRUv3Cell{C<:Flux.GRUv3Cell,MH,MI,MHH,OH,OI,OHH} <:
+       AbstractPrunableRecurrentCell
+    cell::C
+    mask_h::MH
+    mask_i::MI
+    mask_hh::MHH
+    orig_h::OH
+    orig_i::OI
+    orig_hh::OHH
 end
 
 PrunableGRUv3Cell(
@@ -325,67 +362,75 @@ PrunableGRUv3Cell(
     Flux.GRUv3Cell(in => out; init = init, initb = initb, init_state = init_state),
 )
 
-Flux.@functor PrunableGRUv3Cell
-Flux.trainable(c::PrunableGRUv3Cell) = (; cell = c.cell)
-
-
-prunableweights(f::PrunableGRUv3Cell) = (f.cell.Wh, f.cell.Wi)
-prunableweightmasks(f::PrunableGRUv3Cell) = (f.mask_h, f.mask_i)
-prunableweightorigins(f::PrunableGRUv3Cell) = (f.orig_h, f.orig_i)
-
-function checkpoint!(c::PrunableGRUv3Cell)
-    c.orig_h .= c.cell.Wh
-    c.orig_i .= c.cell.Wi
-    c.orig_hh .= c.cell.Wh_h̃
-    c
-end
-
-function rewind!(c::PrunableGRUv3Cell, zerooutweights::Bool = false)
-    c.cell.Wh .= c.orig_h
-    zerooutweights && c.cell.Wh .*= c.mask_h
-    c.cell.Wi .= c.orig_i
-    zerooutweights && c.cell.Wi .*= c.mask_i
-    c.cell.Wh_h̃ .= c.orig_hh
-    zerooutweights && c.cell.Wh_h̃ .*= c.mask_hh
-    c
-end
-
-function (f::PrunableGRUv3Cell)(x, y)
-    f.cell.Wh .*= f.mask_h
-    f.cell.Wi .*= f.mask_i
-    f.cell.Wh_h̃ .*= f.mask_hh
-    f.cell(x, y)
-end
-
-function PrunableGRUCell(c::Flux.GRUv3Cell)
+function PrunableGRUv3Cell(c::Flux.GRUv3Cell)
     orig_h = deepcopy(c.Wh)
     orig_i = deepcopy(c.Wi)
     orig_hh = deepcopy(c.Wh_h̃)
     mask_h = similar(orig_h, Bool) .= true
     mask_i = similar(orig_i, Bool) .= true
     mask_hh = similar(orig_hh, Bool) .= true
-    PrunableGRUCell(c, mask_h, mask_i, mask_hh, orig_h, orig_i, orig_hh)
+    PrunableGRUv3Cell(c, mask_h, mask_i, mask_hh, orig_h, orig_i, orig_hh)
 end
 
-Zygote.@adjoint function (f::PrunableGRUv3Cell)(x)
+function Base.copyto!(dest::PrunableGRUv3Cell, orig::PrunableGRUv3Cell)
+    # # simplify when copyto! is upstreamed to Flux
+    # # copyto!(dest.d, orig.d)
+    copyto!(dest.cell.Wh, orig.cell.Wh)
+    copyto!(dest.cell.Wi, orig.cell.Wi)
+    copyto!(dest.cell.Wh_h̃, orig.cell.Wh_h̃)
+    copyto!(dest.cell.b, orig.cell.b)
+    copyto!(dest.cell.state0, orig.cell.state0)
 
-    pb = Zygote._pullback(f.r, x)[2]
+    copyto!(dest.orig_h, orig.orig_h)
+    copyto!(dest.orig_i, orig.orig_i)
+    copyto!(dest.orig_hh, orig.orig_hh)
+    copyto!(dest.mask_h, orig.mask_h)
+    copyto!(dest.mask_i, orig.mask_i)
+    copyto!(dest.mask_hh, orig.mask_hh)
+    dest
+end
+
+Flux.@functor PrunableGRUv3Cell
+Flux.trainable(c::PrunableGRUv3Cell) = (; cell = c.cell)
+
+prunableweights(f::PrunableGRUv3Cell) = (f.cell.Wh, f.cell.Wi)
+prunableweightmasks(f::PrunableGRUv3Cell) = (f.mask_h, f.mask_i)
+prunableweightorigins(f::PrunableGRUv3Cell) = (f.orig_h, f.orig_i)
+
+function (f::PrunableGRUv3Cell)(x, y)
+    # f.cell.Wh .*= f.mask_h
+    # f.cell.Wi .*= f.mask_i
+    # f.cell.Wh_h̃ .*= f.mask_hh
+    f.cell(x, y)
+end
+
+Zygote.@adjoint function (f::PrunableGRUv3Cell)(h, x)
+    pb = Zygote._pullback(f.cell, h, x)[2]
 
     function inner_pb(y)
-        grad, val = pb(y)
+        grad, val... = pb(y)
         newgrad = (;
-            d = merge(
+            cell = merge(
                 grad,
                 (;
-                    Wi = cell.Wi .* f.mask_i,
-                    Wh = cell.Wh .* f.mask_h,
-                    Wh_h̃ = cell.Wh_h̃ .* f.mask_hh,
+                    Wi = grad.Wi .* f.mask_i,
+                    Wh = grad.Wh .* f.mask_h,
+                    Wh_h̃ = grad.Wh_h̃ .* f.mask_hh,
                 ),
             )
         )
-        return newgrad, val
+        return newgrad, val...
     end
-    return f(x), inner_pb
+    return f(h, x), inner_pb
+end
+
+function _sparisfy(r::PrunableGRUv3Cell)
+    Flux.GRUv3Cell(
+        sparse(r.cell.Wi),
+        sparse(r.cell.Wh),
+        r.cell.b,
+        sparse(r.cell.Wh_h̃)r.cell.state0,
+    )
 end
 
 # Recur wrappers
@@ -398,8 +443,30 @@ for (name, cell) in (
 )
     @eval $name(a...; ka...) = Flux.Recur($cell(a...; ka...))
     @eval Flux.Recur(r::$cell) = Flux.Recur(r, r.cell.state0)
+
+    @eval function Base.copyto!(dest::Flux.Recur{<:$cell}, orig::Flux.Recur{<:$cell})
+        copyto!(dest.cell, orig.cell)
+        if dest.state isa Tuple
+            copyto!.(dest.state, orig.state)
+        else
+            copyto!(dest.state, orig.state)
+        end
+        dest
+    end
 end
 
+for func in (
+    :applymask!,
+    :checkpoint!,
+    :rewind!,
+    :prunableweights,
+    :prunableweightmasks,
+    :prunableweightorigins,
+)
+    @eval $func(r::Flux.Recur{<:AbstractPrunableRecurrentCell}) = $func(r.cell)
+end
+
+_sparisfy(r::Flux.Recur{<:AbstractPrunableRecurrentCell}) = Flux.Recur(sparsify(r.cell))
 
 #####################################
 #
@@ -407,10 +474,10 @@ end
 #
 #####################################
 
-struct PrunableConv <: AbstractPrunableLayer
-    c::Any
-    orig::Any
-    mask::Any
+struct PrunableConv{C<:Flux.Conv,O,M} <: AbstractPrunableLayer
+    c::C
+    orig::O
+    mask::M
 end
 
 Flux.@functor PrunableConv
@@ -426,12 +493,10 @@ prunableweights(f::PrunableConv) = (f.c.weight,)
 prunableweightmasks(f::PrunableConv) = (f.mask,)
 prunableweightorigins(f::PrunableConv) = (f.orig,)
 
-checkpoint!(c::PrunableConv) = (c.orig .= c.c.weight; c)
-
-rewind!(c::PrunableConv, zerooutweights::Bool = false) =
-    (c.c.weight .= c.orig; zerooutweight && c.c.weight .*= c.mask; c)
-
-(f::PrunableConv)(x) = (f.c.weight .*= f.mask; f.c(x))
+function (f::PrunableConv)(x)
+    # f.c.weight .*= f.mask
+    f.c(x)
+end
 
 Zygote.@adjoint function (f::PrunableConv)(x)
 
@@ -445,4 +510,108 @@ Zygote.@adjoint function (f::PrunableConv)(x)
     end
 
     return f(x), inner_pb
+end
+
+_sparisfy(f::PrunableConv) =
+    Flux.Conv(f.c.σ, f.c.weight, f.c.bias, f.c.stride, f.c.pad, f.c.dilation, f.c.groups)
+
+#########################################
+#
+# ATTENTION
+#
+#########################################
+
+struct PrunableMultiHeadAttention{M} <: AbstractPrunableLayer
+    mha::M
+
+    function PrunableMultiHeadAttention(mha::Flux.MultiHeadAttention)
+
+        replaced = Flux.MultiHeadAttention(
+            mha.nheads,
+            PrunableDense(mha.q_proj),
+            PrunableDense(mha.k_proj),
+            PrunableDense(mha.v_proj),
+            mha.attn_drop,
+            PrunableDense(mha.out_proj),
+        )
+
+        return new{typeof(replaced)}(replaced)
+    end
+end
+
+Flux.@functor PrunableMultiHeadAttention
+Flux.trainable(m::PrunableMultiHeadAttention) = (; mha = m.mha)
+
+(m::PrunableMultiHeadAttention)(q_in; kws...) = m.mha(q_in; kws...)
+(m::PrunableMultiHeadAttention)(q_in, k_in; kws...) = m.mha(q_in, k_in; kws...)
+(m::PrunableMultiHeadAttention)(q_in, k_in, z_in, bias = nothing; mask = nothing) =
+    m.mha(x, y, z, bias = bias; mask = mask)
+
+for func in (:prunableweights, :prunableweightorigins, :prunableweightmasks)
+    @eval $func(m::PrunableMultiHeadAttention) = (
+        $func(m.mha.q_proj)...,
+        $func(m.mha.k_proj)...,
+        $func(m.mha.v_proj)...,
+        $func(m.mha.out_proj)...,
+    )
+end
+
+function sparsify(m::PrunableMultiHeadAttention)
+    Flux.MultiHeadAttention(
+        m.mha.nheads,
+        sparsify(m.mha.q_proj),
+        sparsify(m.mha.k_proj),
+        sparsify(m.mha.v_proj),
+        m.mha.attn_drop,
+        sparsify(m.mha.out_proj),
+    )
+end
+
+#########################################
+#
+# MISC
+#
+#########################################
+
+# for (flux, lotto) in (
+#     (Flux.:Dense, :PrunableDense),
+#     (Flux.:RNNCell, :PrunableRNNCell),
+#     (Flux.:RNN, :PrunableRNN),
+#     (Flux.:LSTMCell, :PrunableLSTMCell),
+#     (Flux.:LSTM, :PrunableLSTMCell),
+#     (Flux.:GRUCell, :PrunableGRUCell),
+#     (Flux.:GRU, :PrunableGRU),
+#     (Flux.:GRUv3, :PrunableGRUv3),
+#     (Flux.:Conv, :PrunableConv),
+# )
+#     @eval prunablecounterpart(l::$flux) = $lotto
+#     @eval standardcounterpart(f::$lotto) = $flux
+# end
+
+# prunablecounterpart(x) = x
+# standardcounterpart(x) = x
+# prunablecounterpart(a::A) where A <: AbstractPrunableLayer = prunablecounterpart(A)
+# standardcounterpart(l::T) where T = standardcounterpart(T)
+
+
+function applymask!(l::AbstractPrunableLayer)
+    for (w, m) in zip(prunableweights(l), prunableweightmasks(l))
+        w .*= m
+    end
+    l
+end
+
+function rewind!(l::AbstractPrunableLayer)
+    for (w, o) in zip(prunableweights(l), prunableweightorigins(l))
+        w .= o
+    end
+    applymask!(l)
+    l
+end
+
+function checkpoint!(l::AbstractPrunableLayer)
+    for (o, w) in zip(prunableweightorigins(l), prunableweights(l))
+        o .= w
+    end
+    l
 end

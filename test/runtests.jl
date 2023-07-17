@@ -1,6 +1,6 @@
-using LotteryTickets
+using LotteryTickets, SparseArrays
 using Test
 
-@testset "LotteryTickets.jl" begin
+@testset "Dense" begin
     # Write your tests here.
 end

@@ -25,24 +25,28 @@
 
 # To run this example, we need the following packages:
 using LotteryTickets
-using Flux
+using Flux, Optimisers
 using Flux: onehot, chunk, batchseq, throttle, logitcrossentropy, DataLoader
 using StatsBase: wsample
 using Base.Iterators: partition
 using Parameters: @with_kw
 using CUDA
+using Random: shuffle
 
 CUDA.allowscalar(false)
 
 # We set default values for the hyperparameters:
 
-@with_kw mutable struct Args
-    lr::Float64 = 1e-2	# Learning rate
-    seqlen::Int = 50	# Length of batch sequences
-    nbatch::Int = 50	# Number of batches text is divided into
-    throttle::Int = 30	# Throttle timeout
-    epochs::Int = 5     # Number of Epochs
-    gpu::Bool = false    # Train on GPU?
+Base.@kwdef mutable struct Args
+    lr::Float64 = 5e-3	       # Learning rate
+    seqlen::Int = 50	       # Length of batch sequences
+    batchsz::Int = 50	       # Number of sequences in each batch
+    epochs::Int = 10           # Number of epochs
+    usegpu::Bool = true       # Whether or not to use the GPU
+    testpercent::Float64 = .05 # Percent of corpus examples to use for testing
+    prunerounds::Int = 15
+    modeltype::String = "lstm"
+    prune::Bool = true
 end
 
 # ## Data
@@ -51,27 +55,31 @@ end
 # for training the model:
 
 
-function getdata(args)
+function getdata(args::Args)
     ## Download the data if not downloaded as 'input.txt'
-    isfile("input.txt") ||
-        download("https://cs.stanford.edu/people/karpathy/char-rnn/shakespeare_input.txt","input.txt")
+    isfile("input.txt") || download(
+        "https://cs.stanford.edu/people/karpathy/char-rnn/shakespeare_input.txt",
+        "input.txt",
+    )
 
-    text = collect(String(read("input.txt")))
-    device = args.gpu ? gpu : cpu
+    text = String(read("input.txt"))
+
     ## an array of all unique characters
     alphabet = [unique(text)..., '_']
-    
-    text = map(ch -> onehot(ch, alphabet), text)
-    stop = onehot('_', alphabet)
+    stop = '_'
 
     N = length(alphabet)
     
-    ## Partitioning the data as sequence of batches, which are then collected as array of batches
-    Xs = collect(partition(batchseq(chunk(text, args.nbatch), stop), args.seqlen))
-    Ys = collect(partition(batchseq(chunk(text[2:end], args.nbatch), stop), args.seqlen))
-    train_loader = DataLoader((Xs, Ys) |> device, shuffle=true)
-    # test_loader = DataLoader((xtest, ytest) |> device, batchsize=args.batchsize)
-    return train_loader, N, alphabet, (Xs[5], Ys[5])
+    ## Partitioning the data as sequence of batches, which are then collected 
+    ## as array of batches
+    Xtext = [collect(t) for t in chunk(text, args.batchsz)]
+    Ytext = [collect(t) for t in chunk(text[2:end], args.batchsz)]
+    Xs = partition(batchseq(Xtext, stop), args.seqlen)
+    Ys = partition(batchseq(Ytext, stop), args.seqlen)
+    Xs = [Flux.onehotbatch.(bs, (alphabet,)) for bs in Xs]
+    Ys = [Flux.onehotbatch.(bs, (alphabet,)) for bs in Ys]
+
+    return Xs, Ys, N, alphabet
 end
 
 # The function `getdata` performs the following tasks:
@@ -87,19 +95,70 @@ end
 
 # We create the RNN with two Flux’s LSTM layers and an output layer of the size of the alphabet:
 
-function build_model(N)
+function build_prunable_rnn_model(N)
     return Chain(
-            LotteryTickets.MaskedRNN(N => 128),
-            LotteryTickets.MaskedRNN(128 => 128),
-            LotteryTickets.MaskedDense(128 => N))
+            LotteryTickets.PrunableRNN(N => 128),
+            LotteryTickets.PrunableRNN(128 => 128),
+            Flux.Dense(128 => N))
 end 
 
-function build_old_model(N)
+function build_prunable_lstm_model(N)
+    return Chain(
+            LotteryTickets.PrunableLSTM(N => 128),
+            LotteryTickets.PrunableLSTM(128 => 128),
+            Flux.Dense(128 => N))
+end 
+
+function build_prunable_gru_model(N)
+    return Chain(
+            LotteryTickets.PrunableGRU(N => 128),
+            LotteryTickets.PrunableGRU(128 => 128),
+            Flux.Dense(128 => N))
+end 
+
+function build_prunable_gruv3_model(N)
+    return Chain(
+            LotteryTickets.PrunableGRUv3(N => 128),
+            LotteryTickets.PrunableGRUv3(128 => 128),
+            Flux.Dense(128 => N))
+end 
+
+function build_prunable_old_model(N)
     return Chain(
             Flux.RNN(N => 128),
             Flux.RNN(128 => 128),
             Flux.Dense(128 => N))
 end 
+
+
+function build_rnn_model(N)
+    return Chain(
+            Flux.RNN(N => 128),
+            Flux.RNN(128 => 128),
+            Flux.Dense(128 => N))
+end 
+
+function build_lstm_model(N)
+    return Chain(
+            Flux.LSTM(N => 128),
+            Flux.LSTM(128 => 128),
+            Flux.Dense(128 => N))
+end 
+
+function build_gru_model(N)
+    return Chain(
+            Flux.GRU(N => 128),
+            Flux.GRU(128 => 128),
+            Flux.Dense(128 => N))
+end 
+
+function build_gruv3_model(N)
+    return Chain(
+            Flux.GRUv3(N => 128),
+            Flux.GRUv3(128 => 128),
+            Flux.Dense(128 => N))
+end 
+
 
 # The size of the input and output layers is the same as the size of the alphabet. 
 # Also, we set the size of the hidden layers to 128. 
@@ -109,40 +168,196 @@ end
 # Now, we define the function `train` that creates the model and the loss function as well as the training loop:
 
 
-function train(; kws...)
+function _train_prunable(; kws...)
     ## Initialize the parameters
     args = Args(; kws...)
     
     ## Get Data
-    loader, N, alphabet, (tx, ty) = getdata(args)
+    Xs, Ys, N, alphabet = getdata(args)
 
-    # Xs, Ys = args.gpu ? (gpu(Xs), gpu(Ys)) : (Xs, Ys)
+    ## Shuffle and create a train/test split
+    L = length(Xs)
+    perm = shuffle(1:length(Xs))
+    split = floor(Int, (1-args.testpercent) * L)
+
+    trainX, trainY = Xs[perm[1:split]],       Ys[perm[1:split]]
+    testX,  testY =  Xs[perm[(split+1):end]], Ys[perm[(split+1):end]]
+
+    device = args.usegpu ? gpu : cpu
+
+    ## Move all data to the correct device
+    trainX, trainY, testX, testY = device.((trainX, trainY, testX, testY))
 
     ## Constructing Model
-    m = build_model(N)
+    if args.modeltype == "rnn"
+        @show "BUILDING PRUNABLE RNN"
+        m = build_prunable_rnn_model(N)
+    elseif args.modeltype == "lstm"
+        @show "BUILDING PRUNABLE LSTM"
+        m = build_prunable_lstm_model(N)
+    elseif args.modeltype == "gru"
+        @show "BUILDING PRUNABLE GRU"
+        m = build_prunable_gru_model(N)
+    elseif args.modeltype == "gruv3"
+        @show "BUILDING PRUNABLE GRUv3"
+        m = build_prunable_gruv3_model(N)
+    else
+        @show "BUILDING PRUNABLE RNN (DEFAULT)"
+        m = build_prunable_rnn_model(N)
+    end
+
+    m = args.usegpu ? gpu(m) : m
+
+    pgroup = LotteryTickets.MagnitudePruneGroup([m[1], m[2]], 0.15)
+    pruner = LotteryTickets.Pruner([pgroup])
     # m = build_old_model(N)
 
-    m = args.gpu ? gpu(m) : m
-
-    function loss(xs, ys)
-        Flux.reset!(m)
+    function loss(m, xs, ys)
         return Flux.mean(logitcrossentropy.([m(x) for x in xs], ys))
     end
     
+    function corpusloss(m, X, Y)
+        Flux.mean(loss(m, x, y) for (x, y) in zip(X, Y))
+    end
     ## Training
     opt = ADAM(args.lr)
-    # tx, ty = (Xs[5], Ys[5])
-    evalcb = () -> @show loss(tx, ty)
+    opt_state = Optimisers.setup(opt, m)
 
-    @info "Start Training, total $(args.epochs) epochs"
+    # tx, ty = (Xs[5], Ys[5])
+
+    @info "Starting training: $(args.prunerounds) rounds of $(args.epochs) epochs"
+    for round in 1:args.prunerounds
+
+        @info "Start prune round $round, total $(args.epochs) epochs"
+        testloss = corpusloss(m, testX, testY)
+        @show "TEST LOSS (before training): $testloss"
+        for epoch = 1:args.epochs
+            start = time()
+            @info "Epoch $(epoch) / $(args.epochs)"
+            # Flux.train!(loss, Flux.params(m), zip(Xs, Ys), opt, cb = throttle(evalcb, args.throttle))
+            
+            for (x, y) in zip(trainX, trainY)
+                Flux.reset!(m)
+                grads = Flux.gradient(m) do m
+                    loss(m, x, y)
+                end
+
+                Flux.update!(opt_state, m, grads[1])
+            end
+            start = time() - start
+            @show "EPOCH TIME: $start"
+            testloss = corpusloss(m, testX, testY)
+            @show "TEST LOSS: $testloss"
+        end
+
+        LotteryTickets.pruneandrewind!(pruner)
+        LotteryTickets.pruneinfo(pruner)
+    end
+
+    # @info "Start prune round $round (last round), total $(args.epochs) epochs"
+    # for epoch = 1:args.epochs
+    #     @info "Epoch $(epoch) / $(args.epochs)"
+    #     # Flux.train!(loss, Flux.params(m), zip(Xs, Ys), opt, cb = throttle(evalcb, args.throttle))
+        
+    #     for (x, y) in zip(trainX, trainY)
+    #         Flux.reset!(m)
+    #         grads = Flux.gradient(m) do mod
+    #             loss(m, x, y)
+    #         end
+
+    #         Flux.update!(opt_state, m, grads[1])
+    #     end
+    # end
+
+    return m, alphabet
+end
+
+function _train(; kws...)
+    ## Initialize the parameters
+    args = Args(; kws...)
+    
+    ## Get Data
+    Xs, Ys, N, alphabet = getdata(args)
+
+    ## Shuffle and create a train/test split
+    L = length(Xs)
+    perm = shuffle(1:length(Xs))
+    split = floor(Int, (1-args.testpercent) * L)
+
+    trainX, trainY = Xs[perm[1:split]],       Ys[perm[1:split]]
+    testX,  testY =  Xs[perm[(split+1):end]], Ys[perm[(split+1):end]]
+
+    device = args.usegpu ? gpu : cpu
+
+    ## Move all data to the correct device
+    trainX, trainY, testX, testY = device.((trainX, trainY, testX, testY))
+
+    ## Constructing Model
+    if args.modeltype == "rnn"
+        @show "BUILDING RNN"
+        m = build_rnn_model(N)
+    elseif args.modeltype == "lstm"
+        @show "BUILDING LSTM"
+        m = build_lstm_model(N)
+    elseif args.modeltype == "gru"
+        @show "BUILDING GRU"
+        m = build_gru_model(N)
+    elseif args.modeltype == "gruv3"
+        @show "BUILDING GRUv3"
+        m = build_gruv3_model(N)
+    else
+        @show "BUILDING RNN (DEFAULT)"
+        m = build_rnn_model(N)
+    end
+
+    m = args.usegpu ? gpu(m) : m
+
+
+    function loss(m, xs, ys)
+        return Flux.mean(logitcrossentropy.([m(x) for x in xs], ys))
+    end
+    
+    function corpusloss(m, X, Y)
+        Flux.mean(loss(m, x, y) for (x, y) in zip(X, Y))
+    end
+    ## Training
+    opt = ADAM(args.lr)
+    opt_state = Optimisers.setup(opt, m)
+
+    # tx, ty = (Xs[5], Ys[5])
+
+    testloss = corpusloss(m, testX, testY)
+    @show "TEST LOSS (before training): $testloss"
     for epoch = 1:args.epochs
         @info "Epoch $(epoch) / $(args.epochs)"
+        start = time()
         # Flux.train!(loss, Flux.params(m), zip(Xs, Ys), opt, cb = throttle(evalcb, args.throttle))
-        Flux.train!(Flux.params(m), loader, opt) do x, y
-            loss(x, y)
+        
+        for (x, y) in zip(trainX, trainY)
+            Flux.reset!(m)
+            grads = Flux.gradient(m) do m
+                loss(m, x, y)
+            end
+
+            Flux.update!(opt_state, m, grads[1])
         end
+        start = time() - start
+        @show "EPOCH TIME: $start"
+        testloss = corpusloss(m, testX, testY)
+        @show "TEST LOSS: $testloss"
     end
+
     return m, alphabet
+end
+
+function train(; kws...)
+    a = Args()
+
+    if a.prune
+        return _train_prunable(; kws...)
+    else
+        return _train(; kws...)
+    end
 end
 
 # The function `train` performs the following tasks:
@@ -185,5 +400,6 @@ end
 # Finally, to run this example we call the functions `train` and `sample_data`:
 
 cd(@__DIR__)
-# m, alphabet = train()
+# data = getdata()
+m, alphabet = train()
 # sample_data(m, alphabet, 1000) |> println
