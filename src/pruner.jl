@@ -1,12 +1,12 @@
-
-
-######################################
-#
-# Prune Groups
-#
-######################################
-
 abstract type AbstractPruneGroup end
+
+pruneandrewind!(g::AbstractPruneGroup) = (prune!(g); rewind!(g); g)
+
+######################################
+#
+# Magnitude Prune Group
+#
+#####################################
 
 mutable struct MagnitudePruneGroup <: AbstractPruneGroup
     layers::Vector{Union{AbstractPrunableLayer,Flux.Recur{<:AbstractPrunableRecurrentCell}}}
@@ -78,6 +78,29 @@ function pruneandrewind!(g::MagnitudePruneGroup)
     rewind!(g)
     g
 end
+
+######################################
+#
+# Identity Prune Group
+#
+#####################################
+
+struct IdentityPruneGroup <: AbstractPruneGroup
+    layers::Vector{Union{AbstractPrunableLayer,Flux.Recur{<:AbstractPrunableRecurrentCell}}}
+end
+
+
+prune!(g::IdentityPruneGroup) = g
+
+function rewind!(g::IdentityPruneGroup)
+    for layer in g.layers
+        rewind!(layer)
+        applymask!(layer)
+    end
+    g
+end
+
+pruneandrewind!(g::IdentityPruneGroup) = (prune!(g); rewind!(g); g)
 
 ######################################
 #
