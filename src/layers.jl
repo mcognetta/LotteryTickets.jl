@@ -442,8 +442,8 @@ prunableweightmasks(f::PrunableGRUCell) = (f.mask_h, f.mask_i)
 prunableweightorigins(f::PrunableGRUCell) = (f.orig_h, f.orig_i)
 
 function checkpoint!(c::PrunableGRUCell)
-    # c.orig_h .= c.cell.Wh
-    # c.orig_i .= c.cell.Wi
+    c.orig_h .= c.cell.Wh
+    c.orig_i .= c.cell.Wi
     c
 end
 
