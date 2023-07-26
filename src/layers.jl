@@ -75,6 +75,7 @@ Flux.@functor PrunableDense
 Flux.trainable(d::PrunableDense) = (; d = d.d)
 
 PrunableDense(w::AbstractMatrix, b, σ) = PrunableDense(Dense(w, b, σ))
+PrunableDense(w::AbstractMatrix) = PrunableDense(Dense(w))
 
 function PrunableDense(
     (in, out)::Pair{<:Integer,<:Integer},
@@ -649,8 +650,10 @@ Zygote.@adjoint function (f::PrunableConv)(x)
     return f(x), inner_pb
 end
 
-_sparsify(f::PrunableConv) =
+function _sparsify(f::PrunableConv)
+    applymask!(f)
     Flux.Conv(f.c.σ, f.c.weight, f.c.bias, f.c.stride, f.c.pad, f.c.dilation, f.c.groups)
+end
 
 #########################################
 #
