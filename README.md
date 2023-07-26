@@ -164,7 +164,7 @@ prunableweightorigins(c::PrunableCustomLayer) = (c.orig_w1, c.orig_w2, ...)
 These are used to implement the following methods:
 
 - `applymask!`: mask out the weights in the wrapped layer
-- `checkpoint!`: update the original weights (for example, if you don't want to start all the way over at the initial weights each time you prune and rewind)
+- `checkpoint!`: update the original weights to the current values (for example, if you don't want to start all the way over at the initial weights each time you prune and rewind)
 - `rewind!`: reset the weights to their original values (ignoring pruned weights)
 
 If you would like to implement special behavior for any of these, you can reimplement `_applymask!`, `_checkpoint!`, or `_rewind!` (note the leading underscores).
@@ -262,9 +262,9 @@ end
 
 ## Rough Edges
 
-A small rough edge is with convolutional layers. `Conv` is implemented as a dense *tensor*, but `SparseArrays` only supports vectors and arrays. Thus, when calling `sparsify` on a `PrunableConv` layer, will just result in a regular (dense) `Conv` layer, but with the pruned weights masked out.
+A small rough edge is with convolutional layers. `Conv` is implemented as a dense *tensor*, but `SparseArrays` only supports vectors and arrays. Thus, when calling `sparsify` on a `PrunableConv` layer it will just result in a regular (dense) `Conv` layer, but with the pruned weights masked out.
 
-A major rough edge is the handling of layers that you don't want to prune. When resetting the network between pruning rounds, one may still want to reset these layers as well. The ideal way to do this is to wrap it in a prunable layer, but not prune it. To handle this, we have an `IdentityPruner` type, that implements the same interface as other pruners, but simply doesn't prune any weights. This means it can still rewind the weights of its prunable layers.
+A major rough edge is the handling of layers that you don't want to prune. When resetting the network between pruning rounds, one may still want to reset these layers as well. The ideal way to do this is to wrap it in a prunable layer, but not prune it. To handle this, we have an `IdentityPruner` type that implements the same interface as other pruners, but simply doesn't prune any weights. This means it can still rewind the weights of its prunable layers.
 
 In our example above, you may want to replace the model definition with:
 
