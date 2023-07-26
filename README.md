@@ -264,7 +264,7 @@ end
 
 A small rough edge is with convolutional layers. `Conv` is implemented as a dense *tensor*, but `SparseArrays` only supports vectors and arrays. Thus, when calling `sparsify` on a `PrunableConv` layer, will just result in a regular (dense) `Conv` layer, but with the pruned weights masked out.
 
-A major rough edge is the handling of layers that you don't want to prune. When resetting the network between pruning rounds, one may still want to reset these layers as well. The ideal way to do this is to wrap it in a prunable layer, but not prune it. To handle this, we have an `IdentityPruner` type, that implements the same interface as other pruners, but simply doesn't prune any weights. This means it can still rewind the weights of it's prunable layers.
+A major rough edge is the handling of layers that you don't want to prune. When resetting the network between pruning rounds, one may still want to reset these layers as well. The ideal way to do this is to wrap it in a prunable layer, but not prune it. To handle this, we have an `IdentityPruner` type, that implements the same interface as other pruners, but simply doesn't prune any weights. This means it can still rewind the weights of its prunable layers.
 
 In our example above, you may want to replace the model definition with:
 
@@ -285,7 +285,7 @@ Finally, there is currently no check that a layer exists only in one pruning gro
 
 ## Masked Dense Matrices vs Sparse Matrices
 
-One may ask why we use dense matrices with weight masks to simulate pruned weights, rather than a sparse matrix representation. The main reason is that, until a matrix is *very* sparse, masking + dense matrix-matrix multiple is substantially faster than sparse matrix multiplication.
+One may ask why we use dense matrices with weight masks to simulate pruned weights, rather than a sparse matrix representation. The main reason is that, until a matrix is *very* sparse, masking + dense matrix-matrix multiply is substantially faster than sparse matrix multiplication.
 
 The second reason is that, if gradient updates are not handled correctly, it is easy to accidently make a sparse matrix very dense (for example, by doing an element-wise addition). Using dense matrices + masking removes this issue at the cost of slightly more complex code.
 
