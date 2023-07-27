@@ -5,7 +5,7 @@
     <img width="400px" src="white_background_logo_darkmode.png#gh-dark-mode-only">
 </p>
 
-This library provides the basic tools for iterative pruning to find winning tickets. In particular, it provides prunable versions of all layers provided by Flux as well implementations of pruning strategies. The library also allows for easily producing a sparse representation of a model, after training and pruning has been completed.
+This library provides the basic tools for iterative pruning for Flux models. In particular, it provides prunable versions of all layers provided by Flux as well implementations of pruning strategies. The library also allows for easily producing a sparse representation of a model, after training and pruning has been completed.
 
 ## Background
 
