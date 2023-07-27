@@ -74,8 +74,8 @@ Flux.@functor PrunableDense
 
 Flux.trainable(d::PrunableDense) = (; d = d.d)
 
-PrunableDense(w::AbstractMatrix, b, σ) = PrunableDense(Dense(w, b, σ))
-PrunableDense(w::AbstractMatrix) = PrunableDense(Dense(w))
+PrunableDense(w::AbstractMatrix, bias = true, σ = identity) =
+    PrunableDense(Dense(w, bias, σ))
 
 function PrunableDense(
     (in, out)::Pair{<:Integer,<:Integer},
@@ -151,7 +151,7 @@ PrunableBilinear(w::AbstractArray, bias = true, σ = identity) =
     PrunableBilinear(Flux.Bilinear(w, bias, σ))
 
 function PrunableBilinear(
-    ((in1, in2), out)::Pair{<:Tuple, <:Integer},
+    ((in1, in2), out)::Pair{<:Tuple,<:Integer},
     σ = identity;
     init = Flux.glorot_uniform,
     bias = true,
@@ -680,6 +680,21 @@ struct PrunableMultiHeadAttention{M} <: AbstractPrunableLayer
         return new{typeof(replaced)}(replaced)
     end
 end
+
+PrunableMultiHeadAttention(
+    dims;
+    nheads::Int = 8,
+    bias::Bool = false,
+    init = Flux.glorot_uniform,
+    dropout_prob = 0.0,
+) = PrunableMultiHeadAttention(
+    Flux.MultiHeadAttention(
+        dims;
+        nheads = nheads,
+        init = init,
+        dropout_prob = dropout_prob,
+    ),
+)
 
 Flux.@functor PrunableMultiHeadAttention
 Flux.trainable(m::PrunableMultiHeadAttention) = (; mha = m.mha)
