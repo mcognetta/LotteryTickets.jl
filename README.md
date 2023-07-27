@@ -262,7 +262,7 @@ end
 
 ## Rough Edges
 
-A small rough edge is with convolutional layers. `Conv` is implemented as a dense *tensor*, but `SparseArrays` only supports vectors and arrays. Thus, when calling `sparsify` on a `PrunableConv` layer it will just result in a regular (dense) `Conv` layer, but with the pruned weights masked out.
+A small rough edge is with convolutional and bilinear layers. `Conv` and `Bilinear` are implemented as dense *tensors*, but `SparseArrays` only supports vectors and arrays. Thus, when calling `sparsify` on a `PrunableConv` or `PrunableBilinear` layer it will just result in a regular (dense) `Conv`/`Bilinear` layer, but with the pruned weights masked out.
 
 A major rough edge is the handling of layers that you don't want to prune. When resetting the network between pruning rounds, one may still want to reset these layers as well. The ideal way to do this is to wrap it in a prunable layer, but not prune it. To handle this, we have an `IdentityPruner` type that implements the same interface as other pruners, but simply doesn't prune any weights. This means it can still rewind the weights of its prunable layers.
 

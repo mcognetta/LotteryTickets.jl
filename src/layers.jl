@@ -12,7 +12,7 @@
 abstract type AbstractPrunableLayer end
 
 _prunable(l) = false
-_prunable(::Union{Flux.Recur{<:AbstractPrunableLayer}, AbstractPrunableLayer}) = true
+_prunable(::Union{Flux.Recur{<:AbstractPrunableLayer},AbstractPrunableLayer}) = true
 
 sparsify(m) = Functors.fmap(_sparsify, m; exclude = _prunable)
 sparsify(l::AbstractPrunableLayer) = _sparsify(l)
@@ -147,15 +147,16 @@ Flux.@functor PrunableBilinear
 
 Flux.trainable(b::PrunableBilinear) = (; b = b.b)
 
-PrunableBilinear(w::AbstractMatrix, b, σ) = PrunableBilinear(Bilinear(w, b, σ))
+PrunableBilinear(w::AbstractArray, bias = true, σ = identity) =
+    PrunableBilinear(Flux.Bilinear(w, bias, σ))
 
 function PrunableBilinear(
-    (in, out)::Pair{<:Integer,<:Integer},
+    ((in1, in2), out)::Pair{<:Tuple, <:Integer},
     σ = identity;
     init = Flux.glorot_uniform,
     bias = true,
 )
-    PrunableBilinear(Flux.Bilinear(init(in, out), bias, σ))
+    PrunableBilinear(Flux.Bilinear(init(out, in1, in2), bias, σ))
 end
 
 function PrunableBilinear(b::Flux.Bilinear)
@@ -218,9 +219,10 @@ Zygote.@adjoint function (f::PrunableBilinear)(x, y)
     return f(x, y), inner_pb
 end
 
+# Bilinear is implemented as a 3d tensor, so it cannot be sparsified
 function _sparsify(b::PrunableBilinear)
     applymask!(b)
-    Flux.Dense(sparse(b.b.weight), b.b.bias, b.b.σ)
+    b.b
 end
 
 #####################################
