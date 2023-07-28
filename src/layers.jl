@@ -730,22 +730,34 @@ end
 #
 #########################################
 
-# for (flux, lotto) in (
-#     (Flux.:Dense, :PrunableDense),
-#     (Flux.:RNNCell, :PrunableRNNCell),
-#     (Flux.:RNN, :PrunableRNN),
-#     (Flux.:LSTMCell, :PrunableLSTMCell),
-#     (Flux.:LSTM, :PrunableLSTMCell),
-#     (Flux.:GRUCell, :PrunableGRUCell),
-#     (Flux.:GRU, :PrunableGRU),
-#     (Flux.:GRUv3, :PrunableGRUv3),
-#     (Flux.:Conv, :PrunableConv),
-# )
-#     @eval prunablecounterpart(l::$flux) = $lotto
-#     @eval standardcounterpart(f::$lotto) = $flux
-# end
+_prunablecounterpart(l) = l
+_prunablecounterpart(l::AbstractPrunableLayer) = l
 
-# prunablecounterpart(x) = x
-# standardcounterpart(x) = x
-# prunablecounterpart(a::A) where A <: AbstractPrunableLayer = prunablecounterpart(A)
-# standardcounterpart(l::T) where T = standardcounterpart(T)
+_convertableorprunable(x) = _convertable(x) || _prunable(x)
+
+_convertable(x) = false
+
+for (flux, lotto) in (
+    (Flux.Dense, PrunableDense),
+    (Flux.Bilinear, PrunableBilinear),
+    (Flux.RNNCell, PrunableRNNCell),
+    (Flux.LSTMCell, PrunableLSTMCell),
+    (Flux.GRUCell, PrunableGRUCell),
+    (Flux.Conv, PrunableConv),
+    (Flux.MultiHeadAttention, PrunableMultiHeadAttention),
+)
+    @eval _convertable(::$flux) = true
+    @eval _prunablecounterpart(l::$flux) = $lotto(l)
+end
+
+_convertable(l::Flux.Recur) = true
+_convertable(l::Flux.Recur{<:AbstractPrunableRecurrentCell}) = false
+
+_prunablecounterpart(l::Flux.Recur) = Flux.Recur(_prunablecounterpart(l.cell))
+_prunablecounterpart(l::Flux.Recur{<:AbstractPrunableRecurrentCell}) = l
+prunablecounterpart(l::AbstractPrunableLayer) = _prunablecounterpart(l)
+prunablecounterpart(l) = Functors.fmap(_prunablecounterpart, l; exclude = _convertableorprunable)
+
+  macro prunable(m)
+    :(prunablecounterpart($(esc(m))))
+  end

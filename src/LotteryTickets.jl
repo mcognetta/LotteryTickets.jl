@@ -29,6 +29,7 @@ export sparsify,
     prunableweightmasks,
     prunableweightorigins
 export AbstractPruneGroup, Pruner, MagnitudePruneGroup, prune!, pruneandrewind!, rewind!
+export @prunable
 
 include("layers.jl")
 include("pruner.jl")

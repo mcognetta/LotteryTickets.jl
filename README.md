@@ -56,6 +56,21 @@ These layers can be used as normal in Flux models.
   ) |> device # cpu and gpu is supported
 ```
 
+The `@prunable` macro automatically converts all available layers to their prunable types:
+
+```julia
+julia> @prunable Chain(Dense(2=>5), Dense(5=>2))
+Chain(
+  PrunableDense(
+    Dense(2 => 5),                      # 15 parameters
+  ),
+  PrunableDense(
+    Dense(5 => 2),                      # 12 parameters
+  ),
+)         # Total: 4 trainable arrays, 27 parameters,
+          # plus 4 non-trainable, 40 parameters, summarysize 752 bytes.
+```
+
 Prunable layers can be converted to a sparse representation after pruning using the `sparsify` method. This applies to nested models as well (like `Chain`), but only prunable layers are converted.
 
 ### Interface
@@ -95,9 +110,18 @@ You should make this a functor by including the line:
 
 `Flux.@functor PrubableCustomLayer`
 
-And you should mark the wrapped type as the only trainable parameter:
+Then, you should mark the wrapped type as the only trainable parameter:
 
 `Flux.trainable(c::PrunableCustomLayer) = (; c = c.c)`
+
+And you should mark your original layer as "convertable" (to a prunable layer):
+
+```julia
+LotteryTickets._convertable(::CustomLayer) = true
+LotteryTickets._prunablecounterpart(l::CustomLayer) = PrunableCustomLayer(l)
+```
+
+These allow for automatic conversion to the prunable wrapper via the `@prunable` macro.
 
 Then, you should implement:
 
