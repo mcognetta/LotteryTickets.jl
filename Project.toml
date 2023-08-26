@@ -15,9 +15,9 @@ cuDNN = "02a925ec-e4fe-4b08-9a7e-0d78e3d38ccd"
 
 [compat]
 CUDA = "4"
-Functors = "0.4"
 Flux = "0.14"
-Optimisers = "0.2.12"
+Functors = "0.4"
+Optimisers = "0.2.12, 0.3"
 Zygote = "0.6.49"
 cuDNN = "1"
 julia = "1.9"
